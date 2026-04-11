@@ -4,6 +4,7 @@
 #include <obs-module.h>
 #include "ort-model/ONNXRuntimeModel.h"
 #include "sort/Sort.h"
+#include "yolodetector/YOLODetector.h"
 
 /**
   * @brief The filter_data struct
@@ -62,6 +63,7 @@ struct filter_data {
 	std::mutex modelMutex;
 
 	std::unique_ptr<ONNXRuntimeModel> onnxruntimemodel;
+	std::unique_ptr<YOLODetector> yolodetector;
 	std::vector<std::string> classNames;
 
 #if _WIN32

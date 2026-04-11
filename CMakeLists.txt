@@ -4,10 +4,13 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake" NO_POLICY_SCO
 
 project(${_name} VERSION ${_version})
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
 option(ENABLE_QT "Use Qt functionality" OFF)
 
-include(compilerconfig)
+# include(compilerconfig)  # file not found, skipping
 include(defaults)
 include(helpers)
 
@@ -80,6 +83,16 @@ endif()
 # add the vendor folder to the include path
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE vendor)
 
+# Set runtime library to match OpenCV (static MT/MTd) and disable warning-as-error
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE 
+    $<$<CONFIG:Debug>:/MTd>
+    $<$<NOT:$<CONFIG:Debug>>:/MT>)
+
+set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
+    LINK_FLAGS_DEBUG "/INCREMENTAL /OPT:NOREF"
+    LINK_FLAGS_RELWITHDEBINFO "/LTCG"
+    LINK_FLAGS_RELEASE "/LTCG")
+
 target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE src/plugin-main.c
@@ -90,6 +103,7 @@ target_sources(
           src/ort-model/ONNXRuntimeModel.cpp
           src/edgeyolo/edgeyolo_onnxruntime.cpp
           src/sort/Sort.cpp
-          src/yunet/YuNet.cpp)
+          src/yunet/YuNet.cpp
+          src/yolodetector/YOLODetector.cpp)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

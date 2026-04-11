@@ -25,3 +25,4 @@
 
 # Exclude CMake build number cache
 /cmake/.CMakeBuildNumber
+data/models/my_yolov8m_s.onnx

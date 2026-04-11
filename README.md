@@ -1,4 +1,19 @@
-# ⚠️ Stalled ⚠️ This project is not under active development
+<!-- # ⚠️ Stalled ⚠️ This project is not under active development -->
+
+## OBS Detect - Object Detection and Masking Filter (Forked Version)
+
+**このフォーク版では、YOLODetector クラスを追加し、カスタム YOLO モデルのサポートを強化しています。**
+
+### 追加機能
+- **YOLODetector クラス**: 新規追加の YOLO 物体検出クラス
+  - ONNX Runtime を使用したカスタム YOLO モデル対応
+  - インデックスベースのクラス名付け (0, 1, 2, ...)
+  - 自動生成クラス名："class_0", "class_1" など
+  - DirectML または CPU 推論サポート
+
+- **モデルサイズオプション**: カスタム YOLO モデル用の `yolodetector` オプションを追加（検出クラス名を単純増加インデックスとして使用）
+
+---
 
 ## OBS Detect - Object Detection and Masking Filter
 
@@ -104,3 +119,16 @@ Use the CI scripts again, for example:
 ```
 
 The build should exist in the `./release` folder off the root. You can manually install the files in the OBS directory.
+
+## Third Party Libraries & Licenses
+
+This project incorporates the following third-party components:
+
+- **[EdgeYOLO-ROS](https://github.com/fateshelled/EdgeYOLO-ROS)** (MIT): Efficient YOLO object detection for ROS
+- **[PINTO-Model-Zoo](https://github.com/PINTO0309/PINTO_model_zoo)** (MIT): Collection of pre-trained ONNX models  
+- **[munkres-cpp](https://github.com/Gluttton/munkres-cpp)** (GPLv2): Hungarian algorithm implementation for tracking
+- **[YuNet Face Detection](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)** (Apache 2.0): Fast face detection model
+- **[ONNX Runtime](https://github.com/microsoft/onnxruntime)** (MIT): High-performance ML inference runtime
+- **[OpenCV](https://github.com/opencv/opencv)** (Apache 2.0): Computer vision library
+
+**Note**: This project is distributed under the GPLv2 license as per the original work.

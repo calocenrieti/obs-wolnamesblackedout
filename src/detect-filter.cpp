@@ -28,6 +28,7 @@
 #include "detect-filter-utils.h"
 #include "edgeyolo/edgeyolo_onnxruntime.hpp"
 #include "yunet/YuNet.h"
+#include "yolodetector/YOLODetector.h"
 
 #define EXTERNAL_MODEL_SIZE "!!!EXTERNAL_MODEL!!!"
 #define FACE_DETECT_MODEL_SIZE "!!!FACE_DETECT!!!"
@@ -337,7 +338,7 @@ obs_properties_t *detect_filter_properties(void *data)
 
 	obs_properties_add_int_slider(props, "numThreads", obs_module_text("NumThreads"), 0, 8, 1);
 
-	// add drop down option for model size: Small, Medium, Large
+	// add drop down option for model size: Small, Medium, Large, YOLODetector
 	obs_property_t *model_size =
 		obs_properties_add_list(props, "model_size", obs_module_text("ModelSize"),
 					OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
@@ -346,6 +347,8 @@ obs_properties_t *detect_filter_properties(void *data)
 	obs_property_list_add_string(model_size, obs_module_text("LargeSlow"), "large");
 	obs_property_list_add_string(model_size, obs_module_text("FaceDetect"),
 				     FACE_DETECT_MODEL_SIZE);
+	obs_property_list_add_string(model_size, obs_module_text("YOLODetector"),
+				     "yolodetector");
 	obs_property_list_add_string(model_size, obs_module_text("ExternalModel"),
 				     EXTERNAL_MODEL_SIZE);
 
@@ -548,6 +551,8 @@ void detect_filter_update(void *data, obs_data_t *settings)
 		} else if (newModelSize == FACE_DETECT_MODEL_SIZE) {
 			modelFilepath_rawPtr =
 				obs_module_file("models/face_detection_yunet_2023mar.onnx");
+		} else if (newModelSize == "yolodetector") {
+			modelFilepath_rawPtr = obs_module_file("models/my_yolov8m_s.onnx");
 		} else if (newModelSize == EXTERNAL_MODEL_SIZE) {
 			const char *external_model_file =
 				obs_data_get_string(settings, "external_model_file");
@@ -615,14 +620,12 @@ void detect_filter_update(void *data, obs_data_t *settings)
 					obs_log(LOG_ERROR,
 						"JSON file does not contain 'labels' field");
 					tf->isDisabled = true;
-					tf->onnxruntimemodel.reset();
 					return;
 				}
 			} else {
 				obs_log(LOG_ERROR, "Failed to open JSON file: %s",
 					labelsFilepath.c_str());
 				tf->isDisabled = true;
-				tf->onnxruntimemodel.reset();
 				return;
 			}
 		} else if (tf->modelSize == FACE_DETECT_MODEL_SIZE) {
@@ -640,6 +643,24 @@ void detect_filter_update(void *data, obs_data_t *settings)
 					tf->modelFilepath, tf->numThreads, 50, tf->numThreads,
 					tf->useGPU, onnxruntime_device_id_,
 					onnxruntime_use_parallel_, nms_th_, tf->conf_threshold);
+		} else if (tf->modelSize == "yolodetector") {
+				// Initialize YOLODetector for yolodetector model size
+				if (!tf->yolodetector) {
+					tf->yolodetector = std::make_unique<YOLODetector>();
+					// GPU 使用設定を適用（DirectML エクスプローラー初期化）
+					bool use_gpu = (tf->useGPU == "dml" || tf->useGPU == "cuda");
+					tf->yolodetector->setUseGPU(use_gpu);
+					
+					if (use_gpu) {
+						// DirectML 初期化を試行（Windows のみ）
+						if (!tf->yolodetector->initializeDirectML()) {
+							obs_log(LOG_WARNING, "Failed to initialize DirectML, falling back to CPU");
+						}
+					}
+				}
+				if (!tf->yolodetector->loadModel(tf->modelFilepath.c_str())) {
+					throw std::runtime_error("Failed to load YOLODetector model");
+				}
 			} else {
 				tf->onnxruntimemodel =
 					std::make_unique<edgeyolo_cpp::EdgeYOLOONNXRuntime>(
@@ -654,7 +675,9 @@ void detect_filter_update(void *data, obs_data_t *settings)
 			obs_log(LOG_ERROR, "Failed to load model: %s", e.what());
 			// disable filter
 			tf->isDisabled = true;
-			tf->onnxruntimemodel.reset();
+			if (tf->onnxruntimemodel) {
+				tf->onnxruntimemodel.reset();
+			}
 			return;
 		}
 	}
@@ -785,7 +808,8 @@ void detect_filter_video_tick(void *data, float seconds)
 
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
-	if (tf->isDisabled || !tf->onnxruntimemodel) {
+	// Check if either model is available
+	if (tf->isDisabled || (!tf->onnxruntimemodel && !tf->yolodetector)) {
 		return;
 	}
 
@@ -819,16 +843,31 @@ void detect_filter_video_tick(void *data, float seconds)
 		cv::cvtColor(imageBGRA, inferenceFrame, cv::COLOR_BGRA2BGR);
 	}
 
-	std::vector<Object> objects;
+		std::vector<Object> objects;
 
-	try {
-		std::unique_lock<std::mutex> lock(tf->modelMutex);
-		objects = tf->onnxruntimemodel->inference(inferenceFrame);
-	} catch (const Ort::Exception &e) {
-		obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
-	} catch (const std::exception &e) {
-		obs_log(LOG_ERROR, "%s", e.what());
-	}
+		try {
+			std::unique_lock<std::mutex> lock(tf->modelMutex);
+			// Use YOLODetector if available, otherwise use ONNXRuntime model
+			if (tf->yolodetector) {
+				auto bboxes_opt = tf->yolodetector->inference(inferenceFrame);
+				if (bboxes_opt.has_value()) {
+					objects = tf->yolodetector->convertToObjects(bboxes_opt.value());
+					// YOLODetector: 検出クラス名は単純増加インデックス (0,1,2,...)
+					tf->classNames.clear();
+					for (const auto &obj : objects) {
+						if ((size_t)obj.label >= tf->classNames.size()) {
+							tf->classNames.resize(obj.label + 1, "class_" + std::to_string(obj.label));
+						}
+					}
+				}
+			} else if (tf->onnxruntimemodel) {
+				objects = tf->onnxruntimemodel->inference(inferenceFrame);
+			}
+		} catch (const Ort::Exception &e) {
+			obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
+		} catch (const std::exception &e) {
+			obs_log(LOG_ERROR, "%s", e.what());
+		}
 
 	if (tf->crop_enabled) {
 		// translate the detected objects to the original frame
@@ -838,14 +877,18 @@ void detect_filter_video_tick(void *data, float seconds)
 		}
 	}
 
-	// update the detected object text input
+	// update the detected object text input for YOLODetector with index-based class names
 	if (objects.size() > 0) {
-		if (tf->lastDetectedObjectId != objects[0].label) {
-			tf->lastDetectedObjectId = objects[0].label;
+		int currentLabel = objects[0].label;
+		if (tf->lastDetectedObjectId != currentLabel) {
+			tf->lastDetectedObjectId = currentLabel;
+			std::string className = "class_" + std::to_string(currentLabel);
 			// get source settings
 			obs_data_t *source_settings = obs_source_get_settings(tf->source);
-			obs_data_set_string(source_settings, "detected_object",
-					    tf->classNames[objects[0].label].c_str());
+			if (currentLabel < (int)tf->classNames.size() && !tf->classNames[currentLabel].empty()) {
+				className = tf->classNames[currentLabel];
+			}
+			obs_data_set_string(source_settings, "detected_object", className.c_str());
 			// release the source settings
 			obs_data_release(source_settings);
 		}
@@ -1052,7 +1095,7 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
-	if (tf->isDisabled || !tf->onnxruntimemodel) {
+	if (tf->isDisabled || (!tf->onnxruntimemodel && !tf->yolodetector)) {
 		if (tf->source) {
 			obs_source_skip_video_filter(tf->source);
 		}
