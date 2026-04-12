@@ -33,15 +33,15 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.royshilkrot.obs-detect"
+            "bundleId": "com.calocenrieti.obs-wolnamesblackedout"
         }
     },
-    "name": "obs-detect",
-    "displayName": "OBS Object Detection plugin",
-    "version": "0.0.3",
-    "author": "Roy Shilkrot",
-    "website": "https://github.com/occ-ai/obs-detect",
-    "email": "roy.shil@gmail.com",
+    "name": "obs-wolnamesblackedout",
+    "displayName": "OBS WoLNamesBlackedOut plugin",
+    "version": "0.0.1",
+    "author": "Calocen Rieti",
+    "website": "https://github.com/calocenrieti/obs-wolnamesblackedout",
+    "email": "",
     "uuids": {
         "windowsApp": "158e1684-b307-47c6-bb46-60d605f69afd"
     }

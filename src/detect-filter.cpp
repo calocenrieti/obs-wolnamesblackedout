@@ -435,12 +435,12 @@ void detect_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "max_unseen_frames", 10);
 	obs_data_set_default_bool(settings, "show_unseen_objects", true);
 	obs_data_set_default_int(settings, "numThreads", 1);
-	obs_data_set_default_bool(settings, "preview", true);
+	obs_data_set_default_bool(settings, "preview", false);
 	obs_data_set_default_double(settings, "threshold", 0.5);
-	obs_data_set_default_string(settings, "model_size", "small");
+	obs_data_set_default_string(settings, "model_size", "yolodetector");
 	obs_data_set_default_int(settings, "object_category", -1);
-	obs_data_set_default_bool(settings, "masking_group", false);
-	obs_data_set_default_string(settings, "masking_type", "none");
+	obs_data_set_default_bool(settings, "masking_group", true);
+	obs_data_set_default_string(settings, "masking_type", "solid_color");
 	obs_data_set_default_string(settings, "masking_color", "#000000");
 	obs_data_set_default_int(settings, "masking_blur_radius", 0);
 	obs_data_set_default_int(settings, "dilation_iterations", 0);
