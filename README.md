@@ -1,10 +1,8 @@
 
 ## OBS-WoLNamesBlackedOut (OBS Plugin for FFXIV)
 
-OBSで配信（キャプチャ）しているFF14の画面からキャラクター名を隠すプラグインです。
-
+OBSで配信（キャプチャ）しているFF14の画面からキャラクター名を隠すプラグインです。<br>
 DirectMLでユーザー名を検出しフィルタします。
-
 
 オリジナルはこちらです。
 https://github.com/royshil/obs-detect
@@ -13,7 +11,6 @@ https://github.com/royshil/obs-detect
 
 
 このフォーク版では、YOLODetector クラスを追加し、カスタム YOLO26 モデルのサポートをしています。
-
 
 ### オリジナルからの変更
 - **YOLODetector クラス**: 新規追加の YOLO 物体検出クラス
