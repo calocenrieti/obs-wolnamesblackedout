@@ -276,7 +276,7 @@ std::optional<std::vector<YOLODetector::BoundingBox>> YOLODetector::inference(co
     }
 
     float const* output_tensor = output_tensors[0].GetTensorData<float>();
-    float score_threshold = 0.15f;
+    float score_threshold = 0.1f;
 
     // バッチ 0 を扱う
     const float* batch_base = output_tensor;

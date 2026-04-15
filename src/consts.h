@@ -12,9 +12,9 @@ const char *const MASKING_EFFECT_PATH = "effects/masking.effect";
 const char *const PIXELATE_EFFECT_PATH = "effects/pixelate.effect";
 
 const char *const PLUGIN_INFO_TEMPLATE =
-	"<a href=\"https://github.com/calocenrieti/obs-wolnamesblackedout\">OBS WoLNamesBlackedOut Plugin</a> (%1) by "
+	"<center><a href=\"https://github.com/calocenrieti/obs-wolnamesblackedout\">OBS WoLNamesBlackedOut Plugin</a> (%1) by "
 	"<a href=\"https://github.com/calocenrieti\">Calocen Rieti</a><br>"
-	"<a href=\"https://blog.calocenrieti.com\">Support & Follow</a>";
+	"<a href=\"https://blog.calocenrieti.com\">Support & Follow</a></center>";
 const char *const PLUGIN_INFO_TEMPLATE_UPDATE_AVAILABLE =
 	"<center><a href=\"https://github.com/calocenrieti/obs-wolnamesblackedout/releases\">🚀 Update available! (%1)</a></center>";
 

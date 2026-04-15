@@ -1,134 +1,41 @@
-<!-- # ⚠️ Stalled ⚠️ This project is not under active development -->
 
-## OBS Detect - Object Detection and Masking Filter (Forked Version)
+## OBS-WoLNamesBlackedOut (OBS Plugin for FFXIV)
 
-**このフォーク版では、YOLODetector クラスを追加し、カスタム YOLO モデルのサポートを強化しています。**
+OBSで配信（キャプチャ）しているFF14の画面からキャラクター名を隠すプラグインです。
 
-### 追加機能
+DirectMLでユーザー名を検出しフィルタします。
+
+
+オリジナルはこちらです。
+https://github.com/royshil/obs-detect
+
+https://github.com/royshil/obs-detect
+
+
+このフォーク版では、YOLODetector クラスを追加し、カスタム YOLO26 モデルのサポートをしています。
+
+
+### オリジナルからの変更
 - **YOLODetector クラス**: 新規追加の YOLO 物体検出クラス
-  - ONNX Runtime を使用したカスタム YOLO モデル対応
+  - ONNX Runtime を使用したカスタム YOLO26 モデル対応
   - インデックスベースのクラス名付け (0, 1, 2, ...)
   - 自動生成クラス名："class_0", "class_1" など
-  - DirectML または CPU 推論サポート
+- EdgeYOLO、顔検出、トラッキングなど削除
 
-- **モデルサイズオプション**: カスタム YOLO モデル用の `yolodetector` オプションを追加（検出クラス名を単純増加インデックスとして使用）
-
----
-
-## OBS Detect - Object Detection and Masking Filter
-
-<div align="center">
-
-[![GitHub](https://img.shields.io/github/license/occ-ai/obs-detect)](https://github.com/occ-ai/obs-detect/blob/main/LICENSE)
-[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/occ-ai/obs-detect/push.yaml)](https://github.com/occ-ai/obs-detect/actions/workflows/push.yaml)
-[![Total downloads](https://img.shields.io/github/downloads/occ-ai/obs-detect/total)](https://github.com/occ-ai/obs-detect/releases)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/occ-ai/obs-detect)](https://github.com/occ-ai/obs-detect/releases)
-[![Discord](https://img.shields.io/discord/1200229425141252116)](https://discord.gg/KbjGU2vvUz)
-
-</div>
-
-A plugin for [OBS Studio](https://obsproject.com/) that allows you to detect many types of objects in any source, track them and apply masking.
-
-If you like this work, which is given to you completely free of charge, please consider supporting it by sponsoring us on GitHub:
-
-- https://github.com/sponsors/royshil
-- https://github.com/sponsors/umireon
-
-This work uses the great contributions from [EdgeYOLO-ROS](https://github.com/fateshelled/EdgeYOLO-ROS) and [PINTO-Model-Zoo](https://github.com/PINTO0309/PINTO_model_zoo). The Hungarian algorithm is taken from https://github.com/Gluttton/munkres-cpp under the GPLv2 license.
-
-## Usage
-
-<div align="center">
-<a href="https://youtu.be/LrbUrvaGreQ"><img width="40%" src="https://github.com/occ-ai/obs-detect/assets/441170/b8e7367e-c1b0-4c7e-b0df-af45ead87199" /></a>&nbsp;
-<a href="https://youtu.be/zmdq1bPVYs0"><img width="40%" src="https://github.com/occ-ai/obs-detect/assets/441170/2eb08589-1695-4a40-877e-4985c2b5270f" /></a>
-</div>
-
-- Add the "Detect" filter to any source with an image (Media, Browser, VLC, Image, etc.)
-- Enable "Masking" or "Tracking"
-
-Use Detect to track your pet, or blur out people in your video!
-
-More information and usage tutorials to follow soon.
-
-## Features
-
-Current features:
-
-- Detect over 80 categories of objects, using an efficient model ([EdgeYOLO](https://github.com/LSH9832/edgeyolo))
-- 3 Model sizes: Small, Medium and Large
-- Face detection model, fast and efficient ([YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet))
-- Load custom ONNX detection models from disk
-- Filter by: Minimal Detection confidence, Object category (e.g. only "Person"), Object Minimal Size
-- Masking: Blur, Pixelate, Solid color, Transparent, output binary mask (combine with other plugins!)
-- Tracking: Single object / Biggest / Oldest / All objects, Zoom factor, smooth transition
-- SORT algorithm for tracking smoothness and continuity
-- Save detections to file in real-time, for integrations e.g. with Streamer.bot
-
-Roadmap features:
-- Precise object mask, beyond bounding box
-- Multiple object category selection (e.g. Dog + Cat + Duck)
-- Make available detection information for other plugins through settings
-
-## Train and use a custom detection model
-
-Follow the instructions in [docs/train_model.md](docs/train_model.md) to train and use your own custom model.
-
-## Building
-
-The plugin was built and tested on Mac OSX  (Intel & Apple silicon), Windows and Linux.
-
-Start by cloning this repo to a directory of your choice.
-
-### Mac OSX
-
-Using the CI pipeline scripts, locally you would just call the zsh script. By default this builds a universal binary for both Intel and Apple Silicon. To build for a specific architecture please see `.github/scripts/.build.zsh` for the `-arch` options.
-
-```sh
-$ ./.github/scripts/build-macos -c Release
-```
-
-#### Install
-The above script should succeed and the plugin files (e.g. `obs-ocr.plugin`) will reside in the `./release/Release` folder off of the root. Copy the `.plugin` file to the OBS directory e.g. `~/Library/Application Support/obs-studio/plugins`.
-
-To get `.pkg` installer file, run for example
-```sh
-$ ./.github/scripts/package-macos -c Release
-```
-(Note that maybe the outputs will be in the `Release` folder and not the `install` folder like `pakage-macos` expects, so you will need to rename the folder from `build_x86_64/Release` to `build_x86_64/install`)
-
-### Linux (Ubuntu)
-
-Use the CI scripts again
-```sh
-$ ./.github/scripts/build-linux.sh
-```
-
-Copy the results to the standard OBS folders on Ubuntu
-```sh
-$ sudo cp -R release/RelWithDebInfo/lib/* /usr/lib/x86_64-linux-gnu/
-$ sudo cp -R release/RelWithDebInfo/share/* /usr/share/
-```
-Note: The official [OBS plugins guide](https://obsproject.com/kb/plugins-guide) recommends adding plugins to the `~/.config/obs-studio/plugins` folder.
-
-### Windows
-
-Use the CI scripts again, for example:
-
-```powershell
-> .github/scripts/Build-Windows.ps1 -Target x64
-```
-
-The build should exist in the `./release` folder off the root. You can manually install the files in the OBS directory.
+## インストール
+1. [リリース](https://github.com/calocenrieti/obs-wolnamesblackedout/releases)から最新のobs-wolnamesblackedout_x.x.x.zipをダウンロードします。
+2. OBSを終了します。
+3. ZIPを解凍して出てくる`obs-wolnamesblackedout`フォルダを`%ProgramData%\obs-studio\plugins\`にコピーします。<br>
+（通常`C:\ProgramData\obs-studio\plugins\`です。<br>
+エクスプローラーのアドレスバーにコピペし、該当フォルダを開くのがおすすめです。）
+4. OBSでゲームキャプチャにフィルタ”DETECT”を追加して利用します。
 
 ## Third Party Libraries & Licenses
 
 This project incorporates the following third-party components:
 
-- **[EdgeYOLO-ROS](https://github.com/fateshelled/EdgeYOLO-ROS)** (MIT): Efficient YOLO object detection for ROS
-- **[PINTO-Model-Zoo](https://github.com/PINTO0309/PINTO_model_zoo)** (MIT): Collection of pre-trained ONNX models  
-- **[munkres-cpp](https://github.com/Gluttton/munkres-cpp)** (GPLv2): Hungarian algorithm implementation for tracking
-- **[YuNet Face Detection](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)** (Apache 2.0): Fast face detection model
 - **[ONNX Runtime](https://github.com/microsoft/onnxruntime)** (MIT): High-performance ML inference runtime
 - **[OpenCV](https://github.com/opencv/opencv)** (Apache 2.0): Computer vision library
 
 **Note**: This project is distributed under the GPLv2 license as per the original work.
+

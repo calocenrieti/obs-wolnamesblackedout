@@ -3,7 +3,7 @@
 
 #include <obs-module.h>
 #include "ort-model/ONNXRuntimeModel.h"
-#include "sort/Sort.h"
+// #include "sort/Sort.h"
 #include "yolodetector/YOLODetector.h"
 
 /**
@@ -41,8 +41,8 @@ struct filter_data {
 	int crop_top;
 	int crop_bottom;
 
-	// create SORT tracker
-	Sort tracker;
+	// // create SORT tracker
+	// Sort tracker;
 
 	obs_source_t *source;
 	gs_texrender_t *texrender;
