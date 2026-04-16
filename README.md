@@ -11,10 +11,8 @@ https://github.com/royshil/obs-detect
 また推論をスレッド化することでFPSを改善しています。
 
 ### オリジナルからの変更
-- **YOLODetector クラス**: 新規追加の YOLO 物体検出クラス
-  - ONNX Runtime を使用したカスタム YOLO26 モデル対応
-  - ONNX Runtimeの推論をスレッド化し50FPSを実現
-  - インデックスベースのクラス名付け (0, 1, 2, ...)
+- YOLODetector クラス: 新規追加の YOLO26 物体検出クラス
+- ONNX Runtimeの推論をスレッド化し当方環境で50FPSを実現
 - EdgeYOLO、顔検出、トラッキングなど削除
 
 ## 動作環境
@@ -24,7 +22,7 @@ https://github.com/royshil/obs-detect
 - OBS 32.1.1
 - Intel 11400F
 - Geforce RTX 4700TiS 16GB<br>
-DirectMLを利用しているためRadeonでも動作すると思われます
+DirectMLを利用しているためRadeonでも動作すると思われます。
 
 ## インストール
 1. [リリース](https://github.com/calocenrieti/obs-wolnamesblackedout/releases)から最新のobs-wolnamesblackedout_x.x.x.zipをダウンロードします。
@@ -32,7 +30,7 @@ DirectMLを利用しているためRadeonでも動作すると思われます
 3. ZIPを解凍して出てくる`obs-wolnamesblackedout`フォルダを`%ProgramData%\obs-studio\plugins\`にコピーします。<br>
 （通常`C:\ProgramData\obs-studio\plugins\`です。<br>
 エクスプローラーのアドレスバーにコピペし、該当フォルダを開くのがおすすめです。）
-4. OBSでゲームキャプチャにフィルタ”DETECT”を追加して利用します。
+4. OBSでゲームキャプチャにフィルタ”WoLNamesBlackedOut”を追加して利用します。
 
 ## Third Party Libraries & Licenses
 
