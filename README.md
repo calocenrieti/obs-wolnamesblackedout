@@ -29,7 +29,7 @@ DirectMLを利用しているためRadeonでも動作すると思われます。
 2. OBSを終了します。
 3. ZIPを解凍して出てくる`obs-wolnamesblackedout`フォルダを`%ProgramData%\obs-studio\plugins\`にコピーします。<br>
 （通常`C:\ProgramData\obs-studio\plugins\`です。<br>
-エクスプローラーのアドレスバーにコピペし、該当フォルダを開くのがおすすめです。）
+ProgramDataは隠しフォルダになっているので、エクスプローラーのアドレスバーにコピペし、該当フォルダを開くのがおすすめです。）
 4. OBSでゲームキャプチャにフィルタ”WoLNamesBlackedOut”を追加して利用します。
 
 ## Third Party Libraries & Licenses
