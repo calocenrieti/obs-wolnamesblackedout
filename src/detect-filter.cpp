@@ -17,6 +17,7 @@
 #include <mutex>
 #include <regex>
 #include <thread>
+#include <condition_variable>
 
 #include <plugin-support.h>
 #include "FilterData.h"
@@ -29,10 +30,59 @@
 
 struct detect_filter : public filter_data {};
 
+static void inference_thread_proc(detect_filter *tf)
+{
+	std::unique_lock<std::mutex> lock(tf->inferenceMutex);
+
+	while (!tf->stopInferenceThread) {
+		tf->inferenceCv.wait(lock, [tf] {
+			return tf->stopInferenceThread || tf->pendingInferenceFrameReady;
+		});
+
+		if (tf->stopInferenceThread) {
+			break;
+		}
+
+		cv::Mat frame = tf->pendingInferenceFrame.clone();
+		tf->pendingInferenceFrameReady = false;
+		lock.unlock();
+
+		std::vector<Object> objects;
+		std::vector<std::string> classNames;
+
+		try {
+			std::unique_lock<std::mutex> modelLock(tf->modelMutex);
+			if (tf->yolodetector) {
+				auto bboxes_opt = tf->yolodetector->inference(frame, tf->conf_threshold);
+				if (bboxes_opt.has_value()) {
+					objects = tf->yolodetector->convertToObjects(bboxes_opt.value());
+					for (const auto &obj : objects) {
+						if ((size_t)obj.label >= classNames.size()) {
+							classNames.resize(obj.label + 1, "class_" + std::to_string(obj.label));
+						}
+					}
+				}
+			}
+		} catch (const Ort::Exception &e) {
+			obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
+		} catch (const std::exception &e) {
+			obs_log(LOG_ERROR, "%s", e.what());
+		}
+
+		{
+			std::lock_guard<std::mutex> resultsLock(tf->latestObjectsLock);
+			tf->latestInferenceObjects = std::move(objects);
+			tf->classNames = std::move(classNames);
+		}
+
+		lock.lock();
+	}
+}
+
 const char *detect_filter_getname(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return obs_module_text("Detect");
+	return obs_module_text("WoLNamesBlackedOut");
 }
 
 /**                   PROPERTIES                     */
@@ -157,6 +207,9 @@ obs_properties_t *detect_filter_properties(void *data)
 	obs_properties_add_int_slider(masking_group, "dilation_iterations",
 				      obs_module_text("DilationIterations"), 0, 20, 1);
 
+	obs_properties_add_float_slider(masking_group, "threshold", obs_module_text("Threshold"), 0.01,
+					1.0, 0.01);
+
 
 	// Add a informative text about the plugin
 	std::string basic_info =
@@ -183,7 +236,7 @@ void detect_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, "show_unseen_objects", true);
 	obs_data_set_default_int(settings, "numThreads", 1);
 	obs_data_set_default_bool(settings, "preview", false);
-	obs_data_set_default_double(settings, "threshold", 0.5);
+	obs_data_set_default_double(settings, "threshold", 0.15);
 	obs_data_set_default_string(settings, "model_size", "yolodetector");
 	obs_data_set_default_int(settings, "object_category", -1);
 	obs_data_set_default_bool(settings, "masking_group", true);
@@ -404,6 +457,10 @@ void *detect_filter_create(obs_data_t *settings, obs_source_t *source)
 
 	detect_filter_update(tf, settings);
 
+	// Start asynchronous inference thread once the filter is created.
+	tf->stopInferenceThread = false;
+	tf->inferenceThread = std::thread(inference_thread_proc, tf);
+
 	return tf;
 }
 
@@ -415,6 +472,15 @@ void detect_filter_destroy(void *data)
 
 	if (tf) {
 		tf->isDisabled = true;
+
+		{
+			std::lock_guard<std::mutex> lock(tf->inferenceMutex);
+			tf->stopInferenceThread = true;
+		}
+		tf->inferenceCv.notify_one();
+		if (tf->inferenceThread.joinable()) {
+			tf->inferenceThread.join();
+		}
 
 		obs_enter_graphics();
 		gs_texrender_destroy(tf->texrender);
@@ -470,29 +536,20 @@ void detect_filter_video_tick(void *data, float seconds)
 		cv::cvtColor(imageBGRA, inferenceFrame, cv::COLOR_BGRA2BGR);
 	}
 
-		std::vector<Object> objects;
+		{
+		std::lock_guard<std::mutex> lock(tf->inferenceMutex);
+		tf->pendingInferenceFrame = inferenceFrame;
+		tf->pendingInferenceFrameReady = true;
+	}
+	 tf->inferenceCv.notify_one();
 
-		try {
-			std::unique_lock<std::mutex> lock(tf->modelMutex);
-			// Use YOLODetector if available, otherwise use ONNXRuntime model
-			if (tf->yolodetector) {
-				auto bboxes_opt = tf->yolodetector->inference(inferenceFrame);
-				if (bboxes_opt.has_value()) {
-					objects = tf->yolodetector->convertToObjects(bboxes_opt.value());
-					// YOLODetector: 検出クラス名は単純増加インデックス (0,1,2,...)
-					tf->classNames.clear();
-					for (const auto &obj : objects) {
-						if ((size_t)obj.label >= tf->classNames.size()) {
-							tf->classNames.resize(obj.label + 1, "class_" + std::to_string(obj.label));
-						}
-					}
-				}
-			}
-		} catch (const Ort::Exception &e) {
-			obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
-		} catch (const std::exception &e) {
-			obs_log(LOG_ERROR, "%s", e.what());
-		}
+	std::vector<Object> objects;
+	std::vector<std::string> classNames;
+	{
+		std::lock_guard<std::mutex> lock(tf->latestObjectsLock);
+		objects = tf->latestInferenceObjects;
+		classNames = tf->classNames;
+	}
 
 	if (tf->crop_enabled) {
 		// translate the detected objects to the original frame
@@ -510,8 +567,8 @@ void detect_filter_video_tick(void *data, float seconds)
 			std::string className = "class_" + std::to_string(currentLabel);
 			// get source settings
 			obs_data_t *source_settings = obs_source_get_settings(tf->source);
-			if (currentLabel < (int)tf->classNames.size() && !tf->classNames[currentLabel].empty()) {
-				className = tf->classNames[currentLabel];
+			if (currentLabel < (int)classNames.size() && !classNames[currentLabel].empty()) {
+				className = classNames[currentLabel];
 			}
 			obs_data_set_string(source_settings, "detected_object", className.c_str());
 			// release the source settings
@@ -566,7 +623,7 @@ void detect_filter_video_tick(void *data, float seconds)
 			drawDashedRectangle(frame, cropRect, cv::Scalar(0, 255, 0), 5, 8, 15);
 		}
 		if (tf->preview && objects.size() > 0) {
-			draw_objects(frame, objects, tf->classNames);
+			draw_objects(frame, objects, classNames);
 		}
 		if (tf->maskingEnabled) {
 			cv::Mat mask = cv::Mat::zeros(frame.size(), CV_8UC1);

@@ -61,6 +61,16 @@ struct filter_data {
 	std::mutex outputLock;
 	std::mutex modelMutex;
 
+	std::mutex inferenceMutex;
+	std::condition_variable inferenceCv;
+	cv::Mat pendingInferenceFrame;
+	bool pendingInferenceFrameReady = false;
+	bool stopInferenceThread = false;
+	std::thread inferenceThread;
+
+	std::vector<Object> latestInferenceObjects;
+	std::mutex latestObjectsLock;
+
 	std::unique_ptr<YOLODetector> yolodetector;
 	std::vector<std::string> classNames;
 

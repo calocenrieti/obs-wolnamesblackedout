@@ -135,7 +135,7 @@ bool YOLODetector::loadModel(const char* model_path)
 
 
 // 推論実行
-std::optional<std::vector<YOLODetector::BoundingBox>> YOLODetector::inference(const cv::Mat& image)
+std::optional<std::vector<YOLODetector::BoundingBox>> YOLODetector::inference(const cv::Mat& image, float conf_threshold)
 {
     const int N = 1;   // batch size
     const int C = 3;   // number of channels
@@ -238,7 +238,7 @@ std::optional<std::vector<YOLODetector::BoundingBox>> YOLODetector::inference(co
     }
 
     float const* output_tensor = output_tensors[0].GetTensorData<float>();
-    float score_threshold = 0.1f;
+    float score_threshold = conf_threshold;
 
     // バッチ 0 を扱う
     const float* batch_base = output_tensor;

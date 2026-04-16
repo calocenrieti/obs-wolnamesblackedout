@@ -63,9 +63,10 @@ public:
     /**
      * @brief 推論実行
      * @param image 入力画像（BGR）
+     * @param conf_threshold 信頼度スコアの閾値（デフォルト: 0.15）
      * @return 検出された境界ボックスのリスト。空の場合は std::nullopt
      */
-    std::optional<std::vector<BoundingBox>> __stdcall inference(const cv::Mat& image);
+    std::optional<std::vector<BoundingBox>> __stdcall inference(const cv::Mat& image, float conf_threshold = 0.15f);
     
     /**
      * @brief 推論結果を Object 構造体に変換
