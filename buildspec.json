@@ -38,9 +38,9 @@
     },
     "name": "obs-wolnamesblackedout",
     "displayName": "OBS WoLNamesBlackedOut plugin",
-    "version": "0.0.1",
+    "version": "1.0.0",
     "author": "Calocen Rieti",
-    "website": "https://github.com/calocenrieti/obs-wolnamesblackedout",
+    "website": "https://blog.calocenrieti.com/blog/obs-wolnamesblackedout/",
     "email": "",
     "uuids": {
         "windowsApp": "158e1684-b307-47c6-bb46-60d605f69afd"
