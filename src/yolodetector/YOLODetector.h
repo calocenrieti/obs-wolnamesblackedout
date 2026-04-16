@@ -68,16 +68,6 @@ public:
     std::optional<std::vector<BoundingBox>> __stdcall inference(const cv::Mat& image);
     
     /**
-     * @brief 前処理（リサイズ、正規化など）
-     * @param iImg 入力画像
-     * @param targetWidth 目標幅
-     * @param targetHeight 目標高さ
-     * @param oImg 出力画像
-     * @return 成功時 true
-     */
-    bool __stdcall PreProcess2(const cv::Mat& iImg, int targetWidth, int targetHeight, cv::Mat& oImg);
-    
-    /**
      * @brief 推論結果を Object 構造体に変換
      * @param bboxes YOLODetector の BoundingBox ベクトル
      * @return 変換された Object ベクトル（Object 構造体は既存のプロジェクトで使用されている形式）

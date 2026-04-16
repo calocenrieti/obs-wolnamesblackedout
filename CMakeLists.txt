@@ -100,10 +100,7 @@ target_sources(
           src/detect-filter-info.c
           src/detect-filter-utils.cpp
           src/obs-utils/obs-utils.cpp
-          # src/ort-model/ONNXRuntimeModel.cpp
-          # src/edgeyolo/edgeyolo_onnxruntime.cpp
-          # src/sort/Sort.cpp
-          # src/yunet/YuNet.cpp
+
           src/yolodetector/YOLODetector.cpp)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

@@ -118,7 +118,7 @@ obs_properties_t *detect_filter_properties(void *data)
 							       OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(masking_type, obs_module_text("None"), "none");
 	obs_property_list_add_string(masking_type, obs_module_text("SolidColor"), "solid_color");
-	obs_property_list_add_string(masking_type, obs_module_text("OutputMask"), "output_mask");
+	// obs_property_list_add_string(masking_type, obs_module_text("OutputMask"), "output_mask");
 	obs_property_list_add_string(masking_type, obs_module_text("Blur"), "blur");
 	obs_property_list_add_string(masking_type, obs_module_text("Pixelate"), "pixelate");
 	obs_property_list_add_string(masking_type, obs_module_text("Transparent"), "transparent");
@@ -596,7 +596,6 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
-	// if (tf->isDisabled || (!tf->onnxruntimemodel && !tf->yolodetector)) {
 	if (tf->isDisabled || !tf->yolodetector) {
 		if (tf->source) {
 			obs_source_skip_video_filter(tf->source);

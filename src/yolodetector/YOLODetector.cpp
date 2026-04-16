@@ -133,44 +133,6 @@ bool YOLODetector::loadModel(const char* model_path)
 }
 #endif // _WIN32
 
-// 前処理（リサイズ、正規化など）
-bool YOLODetector::PreProcess2(const cv::Mat& iImg, int targetWidth, int targetHeight, 
-                               cv::Mat& oImg)
-{
-    // 目標のアスペクト比
-    float targetRatio = static_cast<float>(targetWidth) / targetHeight;
-    // 入力画像のアスペクト比
-    float imgRatio = static_cast<float>(iImg.cols) / iImg.rows;
-
-    // 横長、またはアスペクト比が同じ場合：横幅基準でリサイズ
-    if (imgRatio >= targetRatio) {
-        resizeScales = iImg.cols / static_cast<float>(targetWidth);
-        int newHeight = static_cast<int>(iImg.rows / resizeScales);
-        cv::resize(iImg, oImg, cv::Size(targetWidth, std::max<int>(1, newHeight)), 0, 0, 
-                   cv::INTER_LINEAR);
-    }
-    // 縦長の場合：縦幅基準でリサイズ
-    else {
-        resizeScales = iImg.rows / static_cast<float>(targetHeight);
-        int newWidth = static_cast<int>(iImg.cols / resizeScales);
-        cv::resize(iImg, oImg, cv::Size(std::max<int>(1, newWidth), targetHeight), 0, 0, 
-                   cv::INTER_LINEAR);
-    }
-
-    // 出力テンソル（背景は 0 で埋める＝黒）の作成
-    cv::Mat tempImg = cv::Mat::zeros(targetHeight, targetWidth, CV_8UC3);
-
-    // リサイズ済み画像を左上にコピー
-    if (!oImg.empty() && oImg.cols > 0 && oImg.rows > 0) {
-        int copyW = std::min<int>(oImg.cols, tempImg.cols);
-        int copyH = std::min<int>(oImg.rows, tempImg.rows);
-        oImg.copyTo(tempImg(cv::Rect(0, 0, copyW, copyH)));
-    }
-
-    oImg = tempImg;
-
-    return true;
-}
 
 // 推論実行
 std::optional<std::vector<YOLODetector::BoundingBox>> YOLODetector::inference(const cv::Mat& image)
