@@ -7,17 +7,24 @@ DirectMLでユーザー名を検出しフィルタします。
 オリジナルはこちらです。
 https://github.com/royshil/obs-detect
 
-https://github.com/royshil/obs-detect
-
-
-このフォーク版では、YOLODetector クラスを追加し、カスタム YOLO26 モデルのサポートをしています。
+このフォーク版では、YOLODetector クラスを追加し、カスタム YOLO26 モデルのサポートをしています。<br>
+また推論をスレッド化することでFPSを改善しています。
 
 ### オリジナルからの変更
 - **YOLODetector クラス**: 新規追加の YOLO 物体検出クラス
   - ONNX Runtime を使用したカスタム YOLO26 モデル対応
+  - ONNX Runtimeの推論をスレッド化し50FPSを実現
   - インデックスベースのクラス名付け (0, 1, 2, ...)
-  - 自動生成クラス名："class_0", "class_1" など
 - EdgeYOLO、顔検出、トラッキングなど削除
+
+## 動作環境
+以下で動作確認しています。
+
+- Windows11 25H2 64bit
+- OBS 32.1.1
+- Intel 11400F
+- Geforce RTX 4700TiS 16GB<br>
+DirectMLを利用しているためRadeonでも動作すると思われます
 
 ## インストール
 1. [リリース](https://github.com/calocenrieti/obs-wolnamesblackedout/releases)から最新のobs-wolnamesblackedout_x.x.x.zipをダウンロードします。
