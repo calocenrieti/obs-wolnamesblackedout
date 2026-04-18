@@ -86,7 +86,8 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE vendor)
 # Set runtime library to match OpenCV (static MT/MTd) and disable warning-as-error
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE 
     $<$<CONFIG:Debug>:/MTd>
-    $<$<NOT:$<CONFIG:Debug>>:/MT>)
+    $<$<NOT:$<CONFIG:Debug>>:/MT>
+    $<$<CONFIG:Release>:/O2 /arch:AVX2>) 
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
     LINK_FLAGS_DEBUG "/INCREMENTAL /OPT:NOREF"
