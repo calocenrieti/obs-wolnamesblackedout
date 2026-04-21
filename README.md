@@ -22,7 +22,11 @@ https://github.com/royshil/obs-detect
 - OBS 32.1.1
 - Intel 11400F
 - Geforce RTX 4700TiS 16GB<br>
-DirectMLを利用しているためRadeonでも動作すると思われます。
+DirectMLを利用しているためRadeonでも動作すると思われます。<br>
+
+FF14を実行しながらのDirectML推論になりますが、負荷もそこまで大きくなく、ゲームプレイに支障はありません。<br>
+下記の動画では、FF14で名前を消しながらタスクマネージャーを表示して負荷を確認しています。<br>
+https://www.youtube.com/live/Rh45E43iMpE?si=8hvcouXaAgVLhm3i&t=3317
 
 ## インストール
 1. [リリース](https://github.com/calocenrieti/obs-wolnamesblackedout/releases)から最新のobs-wolnamesblackedout_x.x.x.zipをダウンロードします。
