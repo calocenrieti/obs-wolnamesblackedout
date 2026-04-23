@@ -10,6 +10,7 @@ const char *const USEGPU_COREML = "coreml";
 const char *const KAWASE_BLUR_EFFECT_PATH = "effects/kawase_blur.effect";
 const char *const MASKING_EFFECT_PATH = "effects/masking.effect";
 const char *const PIXELATE_EFFECT_PATH = "effects/pixelate.effect";
+const char *const INPAINT_EFFECT_PATH = "effects/inpaint.effect";
 
 const char *const PLUGIN_INFO_TEMPLATE =
 	"<center><a href=\"https://github.com/calocenrieti/obs-wolnamesblackedout\">OBS WoLNamesBlackedOut Plugin</a> (%1) by "

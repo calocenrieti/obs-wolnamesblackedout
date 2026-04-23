@@ -23,8 +23,12 @@ struct filter_data {
 	std::string maskingType;
 	int maskingColor;
 	int maskingBlurRadius;
-	int maskingDilateIterations;
-	bool trackingEnabled;
+ 	int maskingDilateIterations;
+
+   	// Inpaint parameters
+   	float inpaintRadius;
+
+ 	bool trackingEnabled;
 	float zoomFactor;
 	float zoomSpeedFactor;
 	std::string zoomObject;
@@ -49,6 +53,7 @@ struct filter_data {
 	gs_effect_t *kawaseBlurEffect;
 	gs_effect_t *maskingEffect;
 	gs_effect_t *pixelateEffect;
+	gs_effect_t *inpaintEffect;
 
 	cv::Mat inputBGRA;
 	cv::Mat outputPreviewBGRA;

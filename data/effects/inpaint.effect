@@ -1,0 +1,184 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d focalmask;
+
+// Inpaint parameters
+uniform float inpaint_radius;     // Expansion radius in pixels
+uniform float inpaint_blur;       // Border blur amount (0.0 - 5.0)
+uniform float tex_size;           // Texture size (width or height)
+
+sampler_state textureSampler {
+	Filter    = Linear;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+struct VertDataIn {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+struct VertDataOut {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertDataOut VSDefault(VertDataOut v_in)
+{
+	VertDataOut vert_out;
+	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = v_in.uv;
+	return vert_out;
+}
+
+/**
+ * Inpaint effect (Improved)
+ * Expands surrounding colors inward to fill the masked region.
+ * Method: For each pixel inside the mask, find the nearest boundary
+ * point and extrapolate color from the opposite side of the boundary.
+ * This creates a "color extension" effect similar to OpenCV inpaint.
+ */
+float4 PSInpaint(VertDataOut v_in) : TARGET
+{
+	float2 uv = v_in.uv;
+	float maskVal = focalmask.Sample(textureSampler, uv).r;
+
+	// Outside of mask - return original
+	if (maskVal < 0.5) {
+		return image.Sample(textureSampler, uv);
+	}
+
+	// Inside mask - perform inpainting
+	float radiusPixels = inpaint_radius;
+	float radiusUV = radiusPixels / tex_size;
+
+	// Sample directions for boundary search
+	const int NUM_DIRS = 24;
+	const float PI = 3.14159265359;
+
+	// Find boundary point and color by searching outward in multiple directions
+	float3 totalColor = float3(0.0, 0.0, 0.0);
+	float totalWeight = 0.0;
+
+	for (int i = 0; i < NUM_DIRS; i++) {
+		float angle = (float(i) / float(NUM_DIRS)) * 2.0 * PI;
+		float2 dir = float2(cos(angle), sin(angle));
+
+		// Binary search for boundary along this direction
+		float tMin = 0.0;
+		float tMax = radiusUV * 2.0;
+		float2 outerUV = uv + dir * tMax;
+		outerUV = clamp(outerUV, 0.0, 1.0);
+		float outerMask = focalmask.Sample(textureSampler, outerUV).r;
+
+		// If outer point is also inside mask, expand search
+		if (outerMask > 0.5) {
+			outerUV = uv + dir * radiusUV * 3.0;
+			outerUV = clamp(outerUV, 0.0, 1.0);
+			outerMask = focalmask.Sample(textureSampler, outerUV).r;
+			tMax = radiusUV * 3.0;
+		}
+
+		// If still outside mask bounds, skip this direction
+		if (outerMask > 0.5) {
+			continue;
+		}
+
+		// Binary search for the exact boundary
+		float2 boundaryUV = uv;
+		for (int step = 0; step < 8; step++) {
+			float tMid = (tMin + tMax) * 0.5;
+			float2 midUV = uv + dir * tMid;
+			midUV = clamp(midUV, 0.0, 1.0);
+			float midMask = focalmask.Sample(textureSampler, midUV).r;
+
+			if (midMask > 0.5) {
+				tMin = tMid;
+				boundaryUV = midUV;
+			} else {
+				tMax = tMid;
+			}
+		}
+
+		// Get color from outside the mask (slightly beyond boundary)
+		float2 outsideUV = boundaryUV + dir * (radiusUV * 0.1);
+		outsideUV = clamp(outsideUV, 0.0, 1.0);
+		float4 outsideColor = image.Sample(textureSampler, outsideUV);
+
+		// Get color from inside (slightly before boundary) for gradient estimation
+		float2 insideUV = boundaryUV - dir * (radiusUV * 0.05);
+		insideUV = clamp(insideUV, 0.0, 1.0);
+		float4 insideColor = image.Sample(textureSampler, insideUV);
+
+		// Distance weight: closer to boundary = higher weight
+		float distFromCenter = length(uv - boundaryUV);
+		float distWeight = 1.0 - smoothstep(0.0, radiusUV * 2.0, distFromCenter);
+
+		// Gradient-based extrapolation: use color difference to extend
+		float3 gradient = outsideColor.rgb - insideColor.rgb;
+		float3 extrapolatedColor = outsideColor.rgb + gradient * 0.3;
+
+		// Blend between outside color and extrapolated color
+		float3 color = lerp(outsideColor.rgb, extrapolatedColor, 0.5);
+
+		// Apply weight
+		totalColor += color * distWeight;
+		totalWeight += distWeight;
+	}
+
+	float4 result;
+	if (totalWeight > 0.01) {
+		result = float4(totalColor / totalWeight, 1.0);
+	} else {
+		// Fallback: use average of nearby boundary samples
+		result = image.Sample(textureSampler, uv);
+	}
+
+ 	// Apply blur at the border region for smooth transition
+ 	if (inpaint_blur > 0.01) {
+ 		float blurRadius = inpaint_blur * 0.001;
+ 		float3 blurResult = float3(0.0, 0.0, 0.0);
+ 		float blurWeight = 0.0;
+ 		const int BLUR_SAMPLES = 16;
+
+ 		for (int i = 0; i < BLUR_SAMPLES; i++) {
+ 			float angle = (float(i) / float(BLUR_SAMPLES)) * 2.0 * PI;
+ 			float2 blurUV = uv + float2(cos(angle), sin(angle)) * blurRadius;
+ 			blurUV = clamp(blurUV, 0.0, 1.0);
+ 			blurResult += image.Sample(textureSampler, blurUV).rgb;
+ 			blurWeight += 1.0;
+ 		}
+ 		blurResult /= blurWeight;
+
+ 		// Blend: more blur near the boundary, less toward the center
+ 		// Use distance from nearest boundary as blur factor
+ 		float minBoundaryDist = radiusUV * 2.0;
+ 		for (int i = 0; i < BLUR_SAMPLES; i++) {
+ 			float angle = (float(i) / float(BLUR_SAMPLES)) * 2.0 * PI;
+ 			float2 searchUV = uv + float2(cos(angle), sin(angle)) * radiusUV;
+ 			searchUV = clamp(searchUV, 0.0, 1.0);
+ 			float searchMask = focalmask.Sample(textureSampler, searchUV).r;
+ 			if (searchMask < 0.5) {
+ 				float d = length(uv - searchUV);
+ 				if (d < minBoundaryDist) {
+ 					minBoundaryDist = d;
+ 				}
+ 			}
+ 		}
+
+ 		float blurFactor = smoothstep(radiusUV * 0.1, radiusUV * 0.5, minBoundaryDist) * inpaint_blur * 0.2;
+ 		blurFactor = clamp(blurFactor, 0.0, 1.0);
+ 		result.rgb = lerp(result.rgb, blurResult, blurFactor);
+ 	}
+
+	return result;
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSInpaint(v_in);
+	}
+}

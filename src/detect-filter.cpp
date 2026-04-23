@@ -161,17 +161,18 @@ obs_properties_t *detect_filter_properties(void *data)
 		return true;
 	});
 
-	// add masking options drop down selection: "None", "Solid color", "Blur", "Transparent"
-	obs_property_t *masking_type = obs_properties_add_list(masking_group, "masking_type",
-							       obs_module_text("MaskingType"),
-							       OBS_COMBO_TYPE_LIST,
-							       OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(masking_type, obs_module_text("None"), "none");
-	obs_property_list_add_string(masking_type, obs_module_text("SolidColor"), "solid_color");
-	// obs_property_list_add_string(masking_type, obs_module_text("OutputMask"), "output_mask");
-	obs_property_list_add_string(masking_type, obs_module_text("Blur"), "blur");
-	obs_property_list_add_string(masking_type, obs_module_text("Pixelate"), "pixelate");
-	obs_property_list_add_string(masking_type, obs_module_text("Transparent"), "transparent");
+ 	// add masking options drop down selection: "None", "Solid color", "Blur", "Pixelate", "Transparent", "Inpaint"
+ 	obs_property_t *masking_type = obs_properties_add_list(masking_group, "masking_type",
+ 							       obs_module_text("MaskingType"),
+ 							       OBS_COMBO_TYPE_LIST,
+ 							       OBS_COMBO_FORMAT_STRING);
+ 	obs_property_list_add_string(masking_type, "None", "none");
+ 	obs_property_list_add_string(masking_type, "Solid color", "solid_color");
+ 	obs_property_list_add_string(masking_type, "Blur", "blur");
+ 	obs_property_list_add_string(masking_type, "Pixelate", "pixelate");
+ 	obs_property_list_add_string(masking_type, "Inpaint", "inpaint");
+	obs_property_list_add_string(masking_type, "Transparent", "transparent");
+
 
 	// add color picker for solid color masking
 	obs_properties_add_color(masking_group, "masking_color", obs_module_text("MaskingColor"));
@@ -203,22 +204,21 @@ obs_properties_t *detect_filter_properties(void *data)
 		return true;
 	});
 
-	// add slider for dilation iterations
-	obs_properties_add_int_slider(masking_group, "dilation_iterations",
-				      obs_module_text("DilationIterations"), 0, 20, 1);
+ 	// add slider for dilation iterations
+ 	obs_properties_add_int_slider(masking_group, "dilation_iterations",
+ 				      obs_module_text("DilationIterations"), 0, 20, 1);
 
-	obs_properties_add_float_slider(masking_group, "threshold", obs_module_text("Threshold"), 0.01,
-					1.0, 0.01);
+ 	obs_properties_add_float_slider(masking_group, "threshold", obs_module_text("Threshold"), 0.01,
+ 					1.0, 0.01);
 
+ 	// Add a informative text about the plugin
+ 	std::string basic_info =
+ 		std::regex_replace(PLUGIN_INFO_TEMPLATE, std::regex("%1"), PLUGIN_VERSION);
+ 	obs_properties_add_text(props, "info", basic_info.c_str(), OBS_TEXT_INFO);
 
-	// Add a informative text about the plugin
-	std::string basic_info =
-		std::regex_replace(PLUGIN_INFO_TEMPLATE, std::regex("%1"), PLUGIN_VERSION);
-	obs_properties_add_text(props, "info", basic_info.c_str(), OBS_TEXT_INFO);
-
-	UNUSED_PARAMETER(data);
-	return props;
-}
+ 	UNUSED_PARAMETER(data);
+ 	return props;
+ }
 
 void detect_filter_defaults(obs_data_t *settings)
 {
@@ -249,12 +249,15 @@ void detect_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_double(settings, "zoom_speed_factor", 0.05);
 	obs_data_set_default_string(settings, "zoom_object", "single");
 	obs_data_set_default_string(settings, "save_detections_path", "");
-	obs_data_set_default_bool(settings, "crop_group", false);
-	obs_data_set_default_int(settings, "crop_left", 0);
-	obs_data_set_default_int(settings, "crop_right", 0);
-	obs_data_set_default_int(settings, "crop_top", 0);
-	obs_data_set_default_int(settings, "crop_bottom", 0);
-}
+ 	obs_data_set_default_bool(settings, "crop_group", false);
+ 	obs_data_set_default_int(settings, "crop_left", 0);
+ 	obs_data_set_default_int(settings, "crop_right", 0);
+ 	obs_data_set_default_int(settings, "crop_top", 0);
+ 	obs_data_set_default_int(settings, "crop_bottom", 0);
+
+ 	// Inpaint effect defaults
+ 	obs_data_set_default_double(settings, "inpaint_radius", 70.0);
+ }
 
 void detect_filter_update(void *data, obs_data_t *settings)
 {
@@ -277,10 +280,13 @@ void detect_filter_update(void *data, obs_data_t *settings)
 	tf->saveDetectionsPath = obs_data_get_string(settings, "save_detections_path");
 	tf->crop_enabled = obs_data_get_bool(settings, "crop_group");
 	tf->crop_left = (int)obs_data_get_int(settings, "crop_left");
-	tf->crop_right = (int)obs_data_get_int(settings, "crop_right");
-	tf->crop_top = (int)obs_data_get_int(settings, "crop_top");
-	tf->crop_bottom = (int)obs_data_get_int(settings, "crop_bottom");
-	tf->minAreaThreshold = (int)obs_data_get_int(settings, "min_size_threshold");
+ 	tf->crop_right = (int)obs_data_get_int(settings, "crop_right");
+ 	tf->crop_top = (int)obs_data_get_int(settings, "crop_top");
+ 	tf->crop_bottom = (int)obs_data_get_int(settings, "crop_bottom");
+ 	tf->minAreaThreshold = (int)obs_data_get_int(settings, "min_size_threshold");
+
+ 	// Inpaint parameters
+ 	tf->inpaintRadius = (float)obs_data_get_double(settings, "inpaint_radius");
 
 	const std::string newUseGpu = obs_data_get_string(settings, "useGPU");
 	const uint32_t newNumThreads = (uint32_t)obs_data_get_int(settings, "numThreads");
@@ -431,11 +437,12 @@ void *detect_filter_create(obs_data_t *settings, obs_source_t *source)
 	tf->texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
 	tf->lastDetectedObjectId = -1;
 
-	std::vector<std::tuple<const char *, gs_effect_t **>> effects = {
-		{KAWASE_BLUR_EFFECT_PATH, &tf->kawaseBlurEffect},
-		{MASKING_EFFECT_PATH, &tf->maskingEffect},
-		{PIXELATE_EFFECT_PATH, &tf->pixelateEffect},
-	};
+ 	std::vector<std::tuple<const char *, gs_effect_t **>> effects = {
+ 		{KAWASE_BLUR_EFFECT_PATH, &tf->kawaseBlurEffect},
+ 		{MASKING_EFFECT_PATH, &tf->maskingEffect},
+ 		{PIXELATE_EFFECT_PATH, &tf->pixelateEffect},
+ 		{INPAINT_EFFECT_PATH, &tf->inpaintEffect},
+ 	};
 
 	for (auto [effectPath, effect] : effects) {
 		char *effectPathPtr = obs_module_file(effectPath);
@@ -487,9 +494,11 @@ void detect_filter_destroy(void *data)
 		if (tf->stagesurface) {
 			gs_stagesurface_destroy(tf->stagesurface);
 		}
-		gs_effect_destroy(tf->kawaseBlurEffect);
-		gs_effect_destroy(tf->maskingEffect);
-		obs_leave_graphics();
+ 		gs_effect_destroy(tf->kawaseBlurEffect);
+ 		gs_effect_destroy(tf->maskingEffect);
+ 		gs_effect_destroy(tf->pixelateEffect);
+ 		gs_effect_destroy(tf->inpaintEffect);
+ 		obs_leave_graphics();
 		tf->~detect_filter();
 		bfree(tf);
 	}
@@ -718,9 +727,29 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 			} else if (tf->maskingType == "transparent") {
 				technique_name = "DrawSolidColor";
 				gs_effect_set_color(maskColorParam, 0);
-			} else if (tf->maskingType == "solid_color") {
+		} else if (tf->maskingType == "solid_color") {
 				technique_name = "DrawSolidColor";
 				gs_effect_set_color(maskColorParam, tf->maskingColor);
+		} else if (tf->maskingType == "inpaint") {
+				gs_effect_t *inpaintEffect = tf->inpaintEffect;
+				gs_eparam_t *iImageParam = gs_effect_get_param_by_name(inpaintEffect, "image");
+				gs_eparam_t *iMaskParam = gs_effect_get_param_by_name(inpaintEffect, "focalmask");
+				gs_eparam_t *iRadiusParam = gs_effect_get_param_by_name(inpaintEffect, "inpaint_radius");
+				gs_eparam_t *iTexSizeParam = gs_effect_get_param_by_name(inpaintEffect, "tex_size");
+
+				gs_effect_set_texture(iImageParam, tex);
+				gs_effect_set_texture(iMaskParam, maskTexture);
+				if (iRadiusParam) gs_effect_set_float(iRadiusParam, tf->inpaintRadius);
+ 			if (iTexSizeParam) {
+ 					gs_effect_set_float(iTexSizeParam, (float)width);
+ 				}
+
+				while (gs_effect_loop(inpaintEffect, "Draw")) {
+					gs_draw_sprite(tex, 0, 0, 0);
+				}
+				gs_texture_destroy(tex);
+				gs_texture_destroy(maskTexture);
+				return;
 			}
 		}
 
