@@ -19,7 +19,7 @@ https://github.com/royshil/obs-detect
 以下で動作確認しています。
 
 - Windows11 25H2 64bit
-- OBS 32.1.1
+- OBS 32.1.2
 - Intel 11400F
 - Geforce RTX 4700TiS 16GB<br>
 DirectMLを利用しているためRadeonでも動作すると思われます。<br>
@@ -31,7 +31,8 @@ https://www.youtube.com/live/Rh45E43iMpE?si=8hvcouXaAgVLhm3i&t=3317
 ## インストール
 1. [リリース](https://github.com/calocenrieti/obs-wolnamesblackedout/releases)から最新のobs-wolnamesblackedout_x.x.x.zipをダウンロードします。
 2. OBSを終了します。
-3. ZIPを解凍して出てくる`obs-wolnamesblackedout`フォルダを`%ProgramData%\obs-studio\plugins\`にコピーします。<br>
+3. ZIPを全て展開し、出てくるobs-wolnamesblackedoutフォルダを%ProgramData%\obs-studio\plugins\にコピーします。<br>
+もしくは、同梱しているinstall.ps1の内容を確認の上、を右クリックし"Powershellで実行する"を選択ください。上記フォルダにコピーします。管理者権限が必要なためsmart screenの確認画面がでます<br>
 （通常`C:\ProgramData\obs-studio\plugins\`です。<br>
 ProgramDataは隠しフォルダになっているので、エクスプローラーのアドレスバーにコピペし、該当フォルダを開くのがおすすめです。）
 4. OBSでゲームキャプチャにフィルタ”WoLNamesBlackedOut”を追加して利用します。<br>
