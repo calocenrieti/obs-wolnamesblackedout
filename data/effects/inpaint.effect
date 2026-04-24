@@ -4,7 +4,6 @@ uniform texture2d focalmask;
 
 // Inpaint parameters
 uniform float inpaint_radius;     // Expansion radius in pixels
-uniform float inpaint_blur;       // Border blur amount (0.0 - 5.0)
 uniform float tex_size;           // Texture size (width or height)
 
 sampler_state textureSampler {
@@ -133,43 +132,6 @@ float4 PSInpaint(VertDataOut v_in) : TARGET
 		// Fallback: use average of nearby boundary samples
 		result = image.Sample(textureSampler, uv);
 	}
-
- 	// Apply blur at the border region for smooth transition
- 	if (inpaint_blur > 0.01) {
- 		float blurRadius = inpaint_blur * 0.001;
- 		float3 blurResult = float3(0.0, 0.0, 0.0);
- 		float blurWeight = 0.0;
- 		const int BLUR_SAMPLES = 16;
-
- 		for (int i = 0; i < BLUR_SAMPLES; i++) {
- 			float angle = (float(i) / float(BLUR_SAMPLES)) * 2.0 * PI;
- 			float2 blurUV = uv + float2(cos(angle), sin(angle)) * blurRadius;
- 			blurUV = clamp(blurUV, 0.0, 1.0);
- 			blurResult += image.Sample(textureSampler, blurUV).rgb;
- 			blurWeight += 1.0;
- 		}
- 		blurResult /= blurWeight;
-
- 		// Blend: more blur near the boundary, less toward the center
- 		// Use distance from nearest boundary as blur factor
- 		float minBoundaryDist = radiusUV * 2.0;
- 		for (int i = 0; i < BLUR_SAMPLES; i++) {
- 			float angle = (float(i) / float(BLUR_SAMPLES)) * 2.0 * PI;
- 			float2 searchUV = uv + float2(cos(angle), sin(angle)) * radiusUV;
- 			searchUV = clamp(searchUV, 0.0, 1.0);
- 			float searchMask = focalmask.Sample(textureSampler, searchUV).r;
- 			if (searchMask < 0.5) {
- 				float d = length(uv - searchUV);
- 				if (d < minBoundaryDist) {
- 					minBoundaryDist = d;
- 				}
- 			}
- 		}
-
- 		float blurFactor = smoothstep(radiusUV * 0.1, radiusUV * 0.5, minBoundaryDist) * inpaint_blur * 0.2;
- 		blurFactor = clamp(blurFactor, 0.0, 1.0);
- 		result.rgb = lerp(result.rgb, blurResult, blurFactor);
- 	}
 
 	return result;
 }

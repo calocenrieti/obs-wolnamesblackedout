@@ -79,6 +79,10 @@ struct filter_data {
 	std::unique_ptr<YOLODetector> yolodetector;
 	std::vector<std::string> classNames;
 
+	// Asynchronous inference toggle
+	bool asyncInference = true;
+	bool inferenceCompleted = false;
+
 #if _WIN32
 	std::wstring modelFilepath;
 #else

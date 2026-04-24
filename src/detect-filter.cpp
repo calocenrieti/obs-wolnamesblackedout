@@ -75,6 +75,8 @@ static void inference_thread_proc(detect_filter *tf)
 			tf->classNames = std::move(classNames);
 		}
 
+		tf->inferenceCompleted = true;
+		tf->inferenceCv.notify_one();
 		lock.lock();
 	}
 }
@@ -209,7 +211,12 @@ obs_properties_t *detect_filter_properties(void *data)
  				      obs_module_text("DilationIterations"), 0, 20, 1);
 
  	obs_properties_add_float_slider(masking_group, "threshold", obs_module_text("Threshold"), 0.01,
- 					1.0, 0.01);
+  					1.0, 0.01);
+
+ 	// Asynchronous inference toggle
+ 	obs_properties_add_bool(masking_group, "async_inference", obs_module_text("AsyncInference"));
+ 	// obs_property_set_description(obs_properties_get(masking_group, "async_inference"),
+ 		// obs_module_text("AsyncInferenceDescription"));
 
  	// Add a informative text about the plugin
  	std::string basic_info =
@@ -257,6 +264,9 @@ void detect_filter_defaults(obs_data_t *settings)
 
  	// Inpaint effect defaults
  	obs_data_set_default_double(settings, "inpaint_radius", 70.0);
+
+ 	// Asynchronous inference default
+ 	obs_data_set_default_bool(settings, "async_inference", true);
  }
 
 void detect_filter_update(void *data, obs_data_t *settings)
@@ -287,6 +297,9 @@ void detect_filter_update(void *data, obs_data_t *settings)
 
  	// Inpaint parameters
  	tf->inpaintRadius = (float)obs_data_get_double(settings, "inpaint_radius");
+
+ 	// Asynchronous inference setting
+ 	tf->asyncInference = obs_data_get_bool(settings, "async_inference");
 
 	const std::string newUseGpu = obs_data_get_string(settings, "useGPU");
 	const uint32_t newNumThreads = (uint32_t)obs_data_get_int(settings, "numThreads");
@@ -545,12 +558,21 @@ void detect_filter_video_tick(void *data, float seconds)
 		cv::cvtColor(imageBGRA, inferenceFrame, cv::COLOR_BGRA2BGR);
 	}
 
-		{
+	{
 		std::lock_guard<std::mutex> lock(tf->inferenceMutex);
 		tf->pendingInferenceFrame = inferenceFrame;
 		tf->pendingInferenceFrameReady = true;
+		tf->inferenceCompleted = false;
 	}
-	 tf->inferenceCv.notify_one();
+	tf->inferenceCv.notify_one();
+
+	// If synchronous mode, wait for inference to complete
+	if (!tf->asyncInference) {
+		std::unique_lock<std::mutex> lock(tf->inferenceMutex);
+		tf->inferenceCv.wait(lock, [tf] {
+			return tf->inferenceCompleted || tf->stopInferenceThread;
+		});
+	}
 
 	std::vector<Object> objects;
 	std::vector<std::string> classNames;
