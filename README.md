@@ -1,5 +1,5 @@
 
-## OBS-WoLNamesBlackedOut (OBS Plugin for FFXIV)
+## WoLNamesBlackedOut for OBS (OBS Plugin for FFXIV)
 
 OBSで配信（キャプチャ）しているFF14の画面からキャラクター名を隠すプラグインです。<br>
 DirectMLでユーザー名を検出しフィルタします。
