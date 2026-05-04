@@ -12,8 +12,9 @@ https://github.com/royshil/obs-detect
 
 ### オリジナルからの変更
 - YOLODetector クラス: 新規追加の YOLO26 物体検出クラス
-- ONNX Runtimeの推論をスレッド化し当方環境で50FPSを実現
+- ONNX Runtimeの推論をスレッド化対応し当方環境で50FPSを実現
 - EdgeYOLO、顔検出、トラッキングなど削除
+- マスク対象外エリアを設定可能とし、簡易的ですが配信者のキャラクターをマスク対象外にできるようにしました。
 
 ## 動作環境
 以下で動作確認しています。

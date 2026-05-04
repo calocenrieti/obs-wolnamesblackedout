@@ -30,6 +30,51 @@
 
 struct detect_filter : public filter_data {};
 
+/**
+ * @brief Check if a rectangle is completely contained within the exclude range
+ * @param rect Detection rectangle (x, y, width, height)
+ * @param exclude_left Left boundary of exclude range (pixels from left)
+ * @param exclude_right Right boundary of exclude range (pixels from right)
+ * @param exclude_top Top boundary of exclude range (pixels from top)
+ * @param exclude_bottom Bottom boundary of exclude range (pixels from bottom)
+ * @param frame_width Frame width in pixels
+ * @param frame_height Frame height in pixels
+ * @return true if rect is completely within the exclude range
+ */
+static bool is_rect_excluded(const cv::Rect_<float>& rect, int exclude_left, int exclude_right,
+			     int exclude_top, int exclude_bottom, int frame_width, int frame_height)
+{
+	// Calculate the excluded area boundaries
+	float exclude_area_left = (float)exclude_left;
+	float exclude_area_right = (float)(frame_width - exclude_right);
+	float exclude_area_top = (float)exclude_top;
+	float exclude_area_bottom = (float)(frame_height - exclude_bottom);
+
+	// Check if the rectangle is completely contained within the exclude range
+	return rect.x >= exclude_area_left &&
+	       rect.x + rect.width <= exclude_area_right &&
+	       rect.y >= exclude_area_top &&
+	       rect.y + rect.height <= exclude_area_bottom;
+}
+static void draw_exclude_preview(cv::Mat &frame, const cv::Rect &excludeRect)
+{
+ 	if (excludeRect.width <= 0 || excludeRect.height <= 0) {
+ 		return;
+ 	}
+
+ 	cv::Mat overlay = frame.clone();
+ 	overlay.setTo(cv::Scalar(0, 255, 255));
+ 
+ 	cv::Mat mask(frame.size(), CV_8UC1, cv::Scalar(255));
+ 	cv::rectangle(mask, excludeRect, cv::Scalar(0), -1);
+ 
+ 	cv::Mat shaded = frame.clone();
+ 	overlay.copyTo(shaded, mask);
+ 	const double alpha = 0.12;
+ 	cv::addWeighted(frame, 1.0 - alpha, shaded, alpha, 0, frame);
+ 
+ 	drawDashedRectangle(frame, excludeRect, cv::Scalar(0, 255, 255), 2, 8, 15);
+}
 static void inference_thread_proc(detect_filter *tf)
 {
 	std::unique_lock<std::mutex> lock(tf->inferenceMutex);
@@ -131,6 +176,8 @@ obs_properties_t *detect_filter_properties(void *data)
 
 	obs_properties_t *props = obs_properties_create();
 
+	// preview toggle for the render preview overlay
+	// obs_properties_add_bool(props, "preview", obs_module_text("Preview"));
 
 	// options group for masking
 	obs_properties_t *masking_group = obs_properties_create();
@@ -218,6 +265,44 @@ obs_properties_t *detect_filter_properties(void *data)
  	// obs_property_set_description(obs_properties_get(masking_group, "async_inference"),
  		// obs_module_text("AsyncInferenceDescription"));
 
+ 	// Exclude range group for detection exclusion area
+ 	obs_properties_t *exclude_group = obs_properties_create();
+ 	obs_property_t *exclude_group_prop =
+ 		obs_properties_add_group(props, "exclude_group", obs_module_text("ExcludeGroup"),
+ 					 OBS_GROUP_CHECKABLE, exclude_group);
+
+ 	// add callback to show/hide exclude range options
+ 	obs_property_set_modified_callback(exclude_group_prop, [](obs_properties_t *props_,
+ 								  obs_property_t *,
+ 								  obs_data_t *settings) {
+ 		const bool enabled = obs_data_get_bool(settings, "exclude_group");
+ 		obs_property_t *exclude_preview = obs_properties_get(props_, "exclude_preview");
+ 		obs_property_t *exclude_left = obs_properties_get(props_, "exclude_left");
+ 		obs_property_t *exclude_right = obs_properties_get(props_, "exclude_right");
+ 		obs_property_t *exclude_top = obs_properties_get(props_, "exclude_top");
+ 		obs_property_t *exclude_bottom = obs_properties_get(props_, "exclude_bottom");
+
+ 		obs_property_set_visible(exclude_preview, enabled);
+ 		obs_property_set_visible(exclude_left, enabled);
+ 		obs_property_set_visible(exclude_right, enabled);
+ 		obs_property_set_visible(exclude_top, enabled);
+ 		obs_property_set_visible(exclude_bottom, enabled);
+ 		return true;
+ 	});
+
+ 	// add exclude preview toggle
+ 	obs_properties_add_bool(exclude_group, "exclude_preview", obs_module_text("ExcludePreview"));
+
+ 	// add sliders for exclude range (left, right, top, bottom)
+ 	obs_properties_add_int_slider(exclude_group, "exclude_left",
+ 				      obs_module_text("ExcludeLeft"), 0, 1920, 1);
+ 	obs_properties_add_int_slider(exclude_group, "exclude_right",
+ 				      obs_module_text("ExcludeRight"), 0, 1920, 1);
+ 	obs_properties_add_int_slider(exclude_group, "exclude_top",
+ 				      obs_module_text("ExcludeTop"), 0, 1080, 1);
+ 	obs_properties_add_int_slider(exclude_group, "exclude_bottom",
+ 				      obs_module_text("ExcludeBottom"), 0, 1080, 1);
+
  	// Add a informative text about the plugin
  	std::string basic_info =
  		std::regex_replace(PLUGIN_INFO_TEMPLATE, std::regex("%1"), PLUGIN_VERSION);
@@ -262,6 +347,14 @@ void detect_filter_defaults(obs_data_t *settings)
  	obs_data_set_default_int(settings, "crop_top", 0);
  	obs_data_set_default_int(settings, "crop_bottom", 0);
 
+ 	// Exclude range defaults
+ 	obs_data_set_default_bool(settings, "exclude_group", false);
+ 	obs_data_set_default_bool(settings, "exclude_preview", true);
+ 	obs_data_set_default_int(settings, "exclude_left", 0);
+ 	obs_data_set_default_int(settings, "exclude_right", 0);
+ 	obs_data_set_default_int(settings, "exclude_top", 0);
+ 	obs_data_set_default_int(settings, "exclude_bottom", 0);
+
  	// Inpaint effect defaults
  	obs_data_set_default_double(settings, "inpaint_radius", 70.0);
 
@@ -293,6 +386,14 @@ void detect_filter_update(void *data, obs_data_t *settings)
  	tf->crop_right = (int)obs_data_get_int(settings, "crop_right");
  	tf->crop_top = (int)obs_data_get_int(settings, "crop_top");
  	tf->crop_bottom = (int)obs_data_get_int(settings, "crop_bottom");
+
+ 	tf->exclude_group_enabled = obs_data_get_bool(settings, "exclude_group");
+ 	tf->exclude_preview = obs_data_get_bool(settings, "exclude_preview");
+ 	tf->exclude_left = (int)obs_data_get_int(settings, "exclude_left");
+ 	tf->exclude_right = (int)obs_data_get_int(settings, "exclude_right");
+ 	tf->exclude_top = (int)obs_data_get_int(settings, "exclude_top");
+ 	tf->exclude_bottom = (int)obs_data_get_int(settings, "exclude_bottom");
+
  	tf->minAreaThreshold = (int)obs_data_get_int(settings, "min_size_threshold");
 
  	// Inpaint parameters
@@ -649,16 +750,31 @@ void detect_filter_video_tick(void *data, float seconds)
 		cv::Mat frame;
 		cv::cvtColor(imageBGRA, frame, cv::COLOR_BGRA2BGR);
 
-		if (tf->preview && tf->crop_enabled) {
-			// draw the crop rectangle on the frame in a dashed line
-			drawDashedRectangle(frame, cropRect, cv::Scalar(0, 255, 0), 5, 8, 15);
-		}
-		if (tf->preview && objects.size() > 0) {
-			draw_objects(frame, objects, classNames);
+		// if (tf->preview && tf->crop_enabled) {
+		// 	// draw the crop rectangle on the frame in a dashed line
+		// 	drawDashedRectangle(frame, cropRect, cv::Scalar(0, 255, 0), 5, 8, 15);
+		// }
+		// if (tf->preview && objects.size() > 0) {
+		// 	draw_objects(frame, objects, classNames);
+		// }
+
+		if (tf->preview && tf->exclude_group_enabled && tf->exclude_preview) {
+			cv::Rect excludeRect(
+				tf->exclude_left,
+				tf->exclude_top,
+				frame.cols - tf->exclude_left - tf->exclude_right,
+				frame.rows - tf->exclude_top - tf->exclude_bottom);
+			draw_exclude_preview(frame, excludeRect);
 		}
 		if (tf->maskingEnabled) {
 			cv::Mat mask = cv::Mat::zeros(frame.size(), CV_8UC1);
 			for (const Object &obj : objects) {
+				// Check if this detection should be excluded from masking
+				if (tf->exclude_group_enabled && is_rect_excluded(obj.rect, tf->exclude_left,
+									tf->exclude_right, tf->exclude_top, tf->exclude_bottom,
+									frame.cols, frame.rows)) {
+					continue;  // Skip this detection - don't add to mask
+				}
 				cv::rectangle(mask, obj.rect, cv::Scalar(255), -1);
 			}
 			std::lock_guard<std::mutex> lock(tf->outputLock);

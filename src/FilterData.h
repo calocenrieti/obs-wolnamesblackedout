@@ -44,6 +44,14 @@ struct filter_data {
 	int crop_top;
 	int crop_bottom;
 
+	// Exclude range parameters (detection exclusion area)
+	bool exclude_group_enabled;
+	bool exclude_preview;
+	int exclude_left;
+	int exclude_right;
+	int exclude_top;
+	int exclude_bottom;
+
 	// // create SORT tracker
 	// Sort tracker;
 
