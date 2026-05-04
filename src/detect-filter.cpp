@@ -293,15 +293,29 @@ obs_properties_t *detect_filter_properties(void *data)
  	// add exclude preview toggle
  	obs_properties_add_bool(exclude_group, "exclude_preview", obs_module_text("ExcludePreview"));
 
+ 	// determine slider limits from source resolution
+ 	int source_width = 1920;
+ 	int source_height = 1080;
+ 	if (tf && tf->source) {
+ 		source_width = (int)obs_source_get_base_width(tf->source);
+ 		source_height = (int)obs_source_get_base_height(tf->source);
+ 	}
+ 	if (source_width <= 0) {
+ 		source_width = 1920;
+ 	}
+ 	if (source_height <= 0) {
+ 		source_height = 1080;
+ 	}
+
  	// add sliders for exclude range (left, right, top, bottom)
  	obs_properties_add_int_slider(exclude_group, "exclude_left",
- 				      obs_module_text("ExcludeLeft"), 0, 1920, 1);
+ 				      obs_module_text("ExcludeLeft"), 0, source_width, 1);
  	obs_properties_add_int_slider(exclude_group, "exclude_right",
- 				      obs_module_text("ExcludeRight"), 0, 1920, 1);
+ 				      obs_module_text("ExcludeRight"), 0, source_width, 1);
  	obs_properties_add_int_slider(exclude_group, "exclude_top",
- 				      obs_module_text("ExcludeTop"), 0, 1080, 1);
+ 				      obs_module_text("ExcludeTop"), 0, source_height, 1);
  	obs_properties_add_int_slider(exclude_group, "exclude_bottom",
- 				      obs_module_text("ExcludeBottom"), 0, 1080, 1);
+ 				      obs_module_text("ExcludeBottom"), 0, source_height, 1);
 
  	// Add a informative text about the plugin
  	std::string basic_info =
