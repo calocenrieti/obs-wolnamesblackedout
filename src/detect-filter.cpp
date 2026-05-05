@@ -341,7 +341,7 @@ void detect_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "max_unseen_frames", 10);
 	obs_data_set_default_bool(settings, "show_unseen_objects", true);
 	obs_data_set_default_int(settings, "numThreads", 1);
-	obs_data_set_default_bool(settings, "preview", false);
+	obs_data_set_default_bool(settings, "preview", true);
 	obs_data_set_default_double(settings, "threshold", 0.15);
 	obs_data_set_default_string(settings, "model_size", "yolodetector");
 	obs_data_set_default_int(settings, "object_category", -1);
