@@ -39,6 +39,7 @@ ProgramDataは隠しフォルダになっているので、エクスプローラ
 4. OBSでゲームキャプチャにフィルタ”WoLNamesBlackedOut”を追加して利用します。<br>
 
 設定など詳細は下記サイトを確認ください。<br>
+https://youtu.be/cs6Qgfgf6Is <br>
 https://blog.calocenrieti.com/blog/obs-wolnamesblackedout/
 
 ## Third Party Libraries & Licenses
