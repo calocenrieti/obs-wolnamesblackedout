@@ -27,7 +27,7 @@ DirectMLを利用しているためRadeonでも動作すると思われます。
 
 FF14を実行しながらのDirectML推論になりますが、負荷もそこまで大きくなく、ゲームプレイに支障はありません。<br>
 下記の動画では、FF14で名前を消しながらタスクマネージャーを表示して負荷を確認しています。<br>
-https://www.youtube.com/live/Rh45E43iMpE?si=8hvcouXaAgVLhm3i&t=3317
+[![Watch the video](https://img.youtube.com/vi/Rh45E43iMpE/hqdefault.jpg)](https://www.youtube.com/watch?v=Rh45E43iMpE)<br>
 
 ## インストール
 1. [リリース](https://github.com/calocenrieti/obs-wolnamesblackedout/releases)から最新のobs-wolnamesblackedout_x.x.x.zipをダウンロードします。
