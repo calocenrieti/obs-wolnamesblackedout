@@ -2,9 +2,9 @@
 ## WoLNamesBlackedOut for OBS (OBS Plugin for FFXIV)
 
 OBSで配信（キャプチャ）しているFF14の画面からキャラクター名を隠すプラグインです。<br>
-DirectMLでユーザー名を検出しフィルタします。
-
-オリジナルはこちらです。
+DirectMLでユーザー名を検出しフィルタします。<br>
+[![Watch the video](https://img.youtube.com/vi/cs6Qgfgf6Is/hqdefault.jpg)](https://www.youtube.com/watch?v=cs6Qgfgf6Is)<br>
+オリジナルはこちらです。<br>
 https://github.com/royshil/obs-detect
 
 このフォーク版では、YOLODetector クラスを追加し、カスタム YOLO26 モデルのサポートをしています。<br>
@@ -15,6 +15,8 @@ https://github.com/royshil/obs-detect
 - ONNX Runtimeの推論をスレッド化対応し当方環境で50FPSを実現
 - EdgeYOLO、顔検出、トラッキングなど削除
 - マスク対象外エリアを設定可能とし、簡易的ですが配信者のキャラクターをマスク対象外にできるようにしました。
+
+[![Watch the video](https://img.youtube.com/vi/-JE25IVAbdI/hqdefault.jpg)](https://www.youtube.com/watch?v=-JE25IVAbdI)<br>
 
 ## 動作環境
 以下で動作確認しています。
@@ -27,7 +29,7 @@ DirectMLを利用しているためRadeonでも動作すると思われます。
 
 FF14を実行しながらのDirectML推論になりますが、負荷もそこまで大きくなく、ゲームプレイに支障はありません。<br>
 下記の動画では、FF14で名前を消しながらタスクマネージャーを表示して負荷を確認しています。<br>
-https://www.youtube.com/live/Rh45E43iMpE?si=8hvcouXaAgVLhm3i&t=3317
+[![Watch the video](https://img.youtube.com/vi/Rh45E43iMpE/hqdefault.jpg)](https://www.youtube.com/watch?v=Rh45E43iMpE)<br>
 
 ## インストール
 1. [リリース](https://github.com/calocenrieti/obs-wolnamesblackedout/releases)から最新のobs-wolnamesblackedout_x.x.x.zipをダウンロードします。
@@ -39,7 +41,6 @@ ProgramDataは隠しフォルダになっているので、エクスプローラ
 4. OBSでゲームキャプチャにフィルタ”WoLNamesBlackedOut”を追加して利用します。<br>
 
 設定など詳細は下記サイトを確認ください。<br>
-https://youtu.be/cs6Qgfgf6Is <br>
 https://blog.calocenrieti.com/blog/obs-wolnamesblackedout/
 
 ## Third Party Libraries & Licenses
@@ -48,6 +49,5 @@ This project incorporates the following third-party components:
 
 - **[ONNX Runtime](https://github.com/microsoft/onnxruntime)** (MIT): High-performance ML inference runtime
 - **[OpenCV](https://github.com/opencv/opencv)** (Apache 2.0): Computer vision library
-
-**Note**: This project is distributed under the GPLv2 license as per the original work.
-
+- **[Ultralytics YOLO26](https://github.com/ultralytics/ultralytics)** (AGPL3.0):the latest version of the acclaimed real-time object detection model
+This project utilizes a customized YOLO26 model exported to ONNX.

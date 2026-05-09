@@ -194,18 +194,23 @@ obs_properties_t *detect_filter_properties(void *data)
 		obs_property_t *masking_color = obs_properties_get(props_, "masking_color");
 		obs_property_t *masking_blur_radius =
 			obs_properties_get(props_, "masking_blur_radius");
+		obs_property_t *masking_inpaint_radius =
+			obs_properties_get(props_, "inpaint_radius");
 		obs_property_t *masking_dilation =
 			obs_properties_get(props_, "dilation_iterations");
 
 		obs_property_set_visible(prop, enabled);
 		obs_property_set_visible(masking_color, false);
 		obs_property_set_visible(masking_blur_radius, false);
+		obs_property_set_visible(masking_inpaint_radius, false);
 		obs_property_set_visible(masking_dilation, enabled);
 		std::string masking_type_value = obs_data_get_string(settings, "masking_type");
 		if (masking_type_value == "solid_color") {
 			obs_property_set_visible(masking_color, enabled);
 		} else if (masking_type_value == "blur" || masking_type_value == "pixelate") {
 			obs_property_set_visible(masking_blur_radius, enabled);
+		} else if (masking_type_value == "inpaint") {
+			obs_property_set_visible(masking_inpaint_radius, enabled);
 		}
 		return true;
 	});
@@ -215,12 +220,12 @@ obs_properties_t *detect_filter_properties(void *data)
  							       obs_module_text("MaskingType"),
  							       OBS_COMBO_TYPE_LIST,
  							       OBS_COMBO_FORMAT_STRING);
- 	obs_property_list_add_string(masking_type, "None", "none");
- 	obs_property_list_add_string(masking_type, "Solid color", "solid_color");
- 	obs_property_list_add_string(masking_type, "Blur", "blur");
- 	obs_property_list_add_string(masking_type, "Pixelate", "pixelate");
- 	obs_property_list_add_string(masking_type, "Inpaint", "inpaint");
-	obs_property_list_add_string(masking_type, "Transparent", "transparent");
+  	// obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeNone"), "none");
+  	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeSolidColor"), "solid_color");
+  	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeBlur"), "blur");
+  	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypePixelate"), "pixelate");
+  	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeInpaint"), "inpaint");
+  	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeTransparent"), "transparent");
 
 
 	// add color picker for solid color masking
@@ -230,18 +235,25 @@ obs_properties_t *detect_filter_properties(void *data)
 	obs_properties_add_int_slider(masking_group, "masking_blur_radius",
 				      obs_module_text("MaskingBlurRadius"), 1, 30, 1);
 
-	// add callback to show/hide blur radius and color picker
+	// add slider for inpaint radius
+	obs_properties_add_float_slider(masking_group, "inpaint_radius",
+				        obs_module_text("InpaintRadius"), 1.0, 200.0, 1.0);
+
+	// add callback to show/hide blur radius, inpaint radius, and color picker
 	obs_property_set_modified_callback(masking_type, [](obs_properties_t *props_,
-							    obs_property_t *,
-							    obs_data_t *settings) {
+						    obs_property_t *,
+						    obs_data_t *settings) {
 		std::string masking_type_value = obs_data_get_string(settings, "masking_type");
 		obs_property_t *masking_color = obs_properties_get(props_, "masking_color");
 		obs_property_t *masking_blur_radius =
 			obs_properties_get(props_, "masking_blur_radius");
+		obs_property_t *masking_inpaint_radius =
+			obs_properties_get(props_, "inpaint_radius");
 		obs_property_t *masking_dilation =
 			obs_properties_get(props_, "dilation_iterations");
 		obs_property_set_visible(masking_color, false);
 		obs_property_set_visible(masking_blur_radius, false);
+		obs_property_set_visible(masking_inpaint_radius, false);
 		const bool masking_enabled = obs_data_get_bool(settings, "masking_group");
 		obs_property_set_visible(masking_dilation, masking_enabled);
 
@@ -249,6 +261,8 @@ obs_properties_t *detect_filter_properties(void *data)
 			obs_property_set_visible(masking_color, masking_enabled);
 		} else if (masking_type_value == "blur" || masking_type_value == "pixelate") {
 			obs_property_set_visible(masking_blur_radius, masking_enabled);
+		} else if (masking_type_value == "inpaint") {
+			obs_property_set_visible(masking_inpaint_radius, masking_enabled);
 		}
 		return true;
 	});
@@ -258,12 +272,12 @@ obs_properties_t *detect_filter_properties(void *data)
  				      obs_module_text("DilationIterations"), 0, 20, 1);
 
  	obs_properties_add_float_slider(masking_group, "threshold", obs_module_text("Threshold"), 0.01,
-  					1.0, 0.01);
+ 				1.0, 0.01);
 
  	// Asynchronous inference toggle
  	obs_properties_add_bool(masking_group, "async_inference", obs_module_text("AsyncInference"));
  	// obs_property_set_description(obs_properties_get(masking_group, "async_inference"),
- 		// obs_module_text("AsyncInferenceDescription"));
+ 	// 		obs_module_text("AsyncInferenceDescription"));
 
  	// Exclude range group for detection exclusion area
  	obs_properties_t *exclude_group = obs_properties_create();
@@ -348,7 +362,7 @@ void detect_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, "masking_group", true);
 	obs_data_set_default_string(settings, "masking_type", "solid_color");
 	obs_data_set_default_string(settings, "masking_color", "#000000");
-	obs_data_set_default_int(settings, "masking_blur_radius", 0);
+	obs_data_set_default_int(settings, "masking_blur_radius", 3);
 	obs_data_set_default_int(settings, "dilation_iterations", 0);
 	obs_data_set_default_bool(settings, "tracking_group", false);
 	obs_data_set_default_double(settings, "zoom_factor", 0.0);
