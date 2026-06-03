@@ -43,11 +43,24 @@ ProgramDataは隠しフォルダになっているので、エクスプローラ
 設定など詳細は下記サイトを確認ください。<br>
 https://blog.calocenrieti.com/blog/obs-wolnamesblackedout/
 
+## License
+This project is licensed under the GPL v2 (or later).
+
+This plugin is based on the open-source project
+[obs-detect](https://github.com/royshil/obs-detect) (GPL v2).
+Copyright (c) Roy Shilkrot.
+
+The distribution includes third-party libraries under their respective licenses.
+See the LICENSES folder for details.
+
 ## Third Party Libraries & Licenses
 
 This project incorporates the following third-party components:
 
 - **[ONNX Runtime](https://github.com/microsoft/onnxruntime)** (MIT): High-performance ML inference runtime
+- **[DirectML](https://github.com/microsoft/DirectML)** (MIT): Hardware-accelerated DirectX 12 library for ML
 - **[OpenCV](https://github.com/opencv/opencv)** (Apache 2.0): Computer vision library
-- **[Ultralytics YOLO26](https://github.com/ultralytics/ultralytics)** (AGPL3.0):the latest version of the acclaimed real-time object detection model
-This project utilizes a customized YOLO26 model exported to ONNX.
+
+- **[Ultralytics YOLO26](https://github.com/ultralytics/ultralytics)** (AGPL-3.0): Real-time object detection model
+  This project utilizes a customized YOLO26 model exported to ONNX.
+  *Note: Only the exported ONNX model is used. This project itself is not licensed under AGPL.*
