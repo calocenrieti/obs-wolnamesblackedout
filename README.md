@@ -66,10 +66,3 @@ This project incorporates the following third-party components:
 - **[Ultralytics YOLO26](https://github.com/ultralytics/ultralytics)** (AGPL-3.0): Real-time object detection model
   This project utilizes a customized YOLO26 model exported to ONNX.
   *Note: Only the exported ONNX model is used. This project itself is not licensed under AGPL.*
-
-- **[PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)** (Apache 2.0): Lightweight OCR toolkit
-  This project utilizes the en_PP-OCRv5_mobile_rec recognition model exported to ONNX.
-
-- **[ByteTrack-cpp](https://github.com/derpda/ByteTrack-cpp)** (MIT): C++ implementation of ByteTrack
-
-- **[Eigen](https://gitlab.com/libeigen/eigen)** (MPL 2.0): C++ template library for linear algebra
