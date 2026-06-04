@@ -25,8 +25,81 @@
 #include "obs-utils/obs-utils.h"
 #include "ort-model/utils.hpp"
 #include "detect-filter-utils.h"
+#include "ocr/PaddleOCRRecognizer.h"
 
 #include "yolodetector/YOLODetector.h"
+
+// utility: trim whitespace
+static inline std::string trim_copy(const std::string &s)
+{
+	size_t start = 0;
+	while (start < s.size() && isspace((unsigned char)s[start])) start++;
+	size_t end = s.size();
+	while (end > start && isspace((unsigned char)s[end-1])) end--;
+	return s.substr(start, end - start);
+}
+
+// split by comma and trim entries
+static inline std::vector<std::string> split_comma_list(const std::string &s)
+{
+	std::vector<std::string> out;
+	size_t i = 0;
+	while (i < s.size()) {
+		size_t j = s.find(',', i);
+		if (j == std::string::npos) j = s.size();
+		std::string token = trim_copy(s.substr(i, j - i));
+		if (!token.empty()) out.push_back(token);
+		i = j + 1;
+	}
+	return out;
+}
+
+static std::string sanitize_ocr_text(const std::string &text)
+{
+	std::string out;
+	out.reserve(text.size());
+	for (unsigned char c : text) {
+		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-' || c == '\'' || c == ' ') {
+			out.push_back(c);
+		}
+	}
+	return out;
+}
+
+// Levenshtein distance
+static int levenshtein_distance(const std::string &a, const std::string &b)
+{
+	const size_t n = a.size();
+	const size_t m = b.size();
+	if (n == 0) return (int)m;
+	if (m == 0) return (int)n;
+	std::vector<int> prev(m + 1), cur(m + 1);
+	for (size_t j = 0; j <= m; ++j) prev[j] = (int)j;
+	for (size_t i = 1; i <= n; ++i) {
+		cur[0] = (int)i;
+		for (size_t j = 1; j <= m; ++j) {
+			int cost = (a[i-1] == b[j-1]) ? 0 : 1;
+			cur[j] = std::min({ prev[j] + 1, cur[j-1] + 1, prev[j-1] + cost });
+		}
+		prev.swap(cur);
+	}
+	return prev[m];
+}
+
+// similarity ratio based on Levenshtein (0.0 - 1.0)
+static double levenshtein_similarity(const std::string &a_in, const std::string &b_in)
+{
+	std::string a = a_in;
+	std::string b = b_in;
+	if (a.empty() && b.empty()) return 1.0;
+	// normalize to lower for case-insensitive comparison
+	std::transform(a.begin(), a.end(), a.begin(), [](unsigned char c){ return std::tolower(c); });
+	std::transform(b.begin(), b.end(), b.begin(), [](unsigned char c){ return std::tolower(c); });
+	int dist = levenshtein_distance(a, b);
+	int maxlen = std::max((int)a.size(), (int)b.size());
+	if (maxlen == 0) return 1.0;
+	return 1.0 - (double)dist / (double)maxlen;
+}
 
 struct detect_filter : public filter_data {};
 
@@ -107,6 +180,89 @@ static void inference_thread_proc(detect_filter *tf)
 						}
 					}
 				}
+
+				// If tracking is enabled, pass detections to ByteTrack and replace objects with tracked results
+				if (tf->trackingEnabled) {
+					try {
+						if (!tf->tracker) {
+							// initialize tracker with defaults (frame_rate=30, track_buffer=30)
+							tf->tracker = std::make_unique<byte_track::BYTETracker<ByteTrack::Detection, ByteTrack::Track>>(30, 30, tf->conf_threshold);
+						}
+						// convert to ByteTrack detections
+						std::vector<std::shared_ptr<ByteTrack::Detection>> dets;
+						dets.reserve(objects.size());
+						for (const auto &o : objects) {
+							dets.push_back(std::make_shared<ByteTrack::Detection>(o));
+						}
+						// run tracker
+						auto tracked = tf->tracker->update(dets);
+						// convert tracked user tracks back to Objects
+						std::vector<Object> tracked_objects;
+						tracked_objects.reserve(tracked.size());
+
+						std::vector<cv::Mat> ocr_images;
+						std::vector<uint64_t> ocr_track_ids;
+					const bool do_ocr = tf->ocrEnabled && tf->ocrRecognizer && tf->ocrRecognizer->isReady();
+					auto now = std::chrono::steady_clock::now();
+					bool needs_ocr_refresh = false;
+					{
+						std::lock_guard<std::mutex> ocrLock(tf->ocrMutex);
+						needs_ocr_refresh = do_ocr &&
+							(now - tf->lastOcrRefreshTime) >=
+							std::chrono::duration<double>(tf->ocrRefreshInterval) &&
+							!tf->pendingOcrWork;
+					}
+					for (const auto &ut : tracked) {
+						if (!ut) continue;
+						const Object &o = ut->getObject();
+						tracked_objects.push_back(o);
+
+						if (!tf->ocrEnabled || !tf->ocrRecognizer || !tf->ocrRecognizer->isReady()) {
+							continue;
+						}
+
+						const uint64_t track_id = o.id;
+						if (track_id == 0) {
+							continue;
+						}
+
+						const bool missing_text = (tf->latestOcrTexts.find(track_id) == tf->latestOcrTexts.end());
+						if (!missing_text && !needs_ocr_refresh) {
+							continue;
+						}
+
+						cv::Rect rect = o.rect;
+						rect &= cv::Rect(0, 0, frame.cols, frame.rows);
+						if (rect.area() <= 0) {
+							continue;
+						}
+
+						// Expand rect by ocrExpandPixels
+						if (tf->ocrExpandPixels > 0) {
+							rect.x = std::max(0, rect.x - tf->ocrExpandPixels);
+							rect.y = std::max(0, rect.y - tf->ocrExpandPixels);
+							rect.width = std::min(frame.cols - rect.x, rect.width + 2 * tf->ocrExpandPixels);
+							rect.height = std::min(frame.rows - rect.y, rect.height + 2 * tf->ocrExpandPixels);
+						}
+
+						ocr_images.push_back(frame(rect).clone());
+						ocr_track_ids.push_back(track_id);
+					}
+
+					if (!ocr_images.empty()) {
+						std::lock_guard<std::mutex> ocrLock(tf->ocrMutex);
+						if (!tf->pendingOcrWork) {
+							tf->pendingOcrImages = std::move(ocr_images);
+							tf->pendingOcrTrackIds = std::move(ocr_track_ids);
+							tf->pendingOcrWork = true;
+							tf->ocrCv.notify_one();
+						}
+					}
+					objects = std::move(tracked_objects);
+					} catch (const std::exception &e) {
+						obs_log(LOG_ERROR, "ByteTrack exception: %s", e.what());
+					}
+				}
 			}
 		} catch (const Ort::Exception &e) {
 			obs_log(LOG_ERROR, "ONNXRuntime Exception: %s", e.what());
@@ -122,6 +278,80 @@ static void inference_thread_proc(detect_filter *tf)
 
 		tf->inferenceCompleted = true;
 		tf->inferenceCv.notify_one();
+		lock.lock();
+	}
+}
+
+static void ocr_thread_proc(detect_filter *tf)
+{
+	std::unique_lock<std::mutex> lock(tf->ocrMutex);
+
+	while (!tf->stopOcrThread) {
+		tf->ocrCv.wait(lock, [tf] {
+			return tf->stopOcrThread || tf->pendingOcrWork;
+		});
+
+		if (tf->stopOcrThread) {
+			break;
+		}
+
+		auto ocr_images = std::move(tf->pendingOcrImages);
+		auto ocr_track_ids = std::move(tf->pendingOcrTrackIds);
+		tf->pendingOcrImages.clear();
+		tf->pendingOcrTrackIds.clear();
+		tf->pendingOcrWork = false;
+		lock.unlock();
+
+		if (!ocr_images.empty() && tf->ocrRecognizer) {
+			try {
+				auto ocr_results = tf->ocrRecognizer->inferBatch(ocr_images);
+				std::lock_guard<std::mutex> ocrResultsLock(tf->latestObjectsLock);
+				for (size_t idx = 0; idx < ocr_results.size() && idx < ocr_track_ids.size(); ++idx) {
+					uint64_t tid = ocr_track_ids[idx];
+					const std::string new_text = sanitize_ocr_text(ocr_results[idx].text);
+
+					auto it_prev = tf->latestOcrTexts.find(tid);
+					bool prev_matched_exclude = false;
+					if (it_prev != tf->latestOcrTexts.end()) {
+						const std::string prev_text = sanitize_ocr_text(it_prev->second);
+						for (const auto &ex : tf->maskExcludeTexts) {
+							if (!ex.empty() && prev_text == ex) {
+								prev_matched_exclude = true;
+								break;
+							}
+						}
+					}
+
+					if (prev_matched_exclude && !tf->maskExcludeTexts.empty()) {
+						// If previously matched an exclude entry, and new OCR is similar to
+						// any exclude entry (>= 0.7), keep previous text (continue to exclude).
+						bool similar_to_exclude = false;
+						for (const auto &ex : tf->maskExcludeTexts) {
+							if (ex.empty()) continue;
+							double sim = levenshtein_similarity(new_text, ex);
+							if (sim >= 0.7) {
+								similar_to_exclude = true;
+								break;
+							}
+						}
+						if (similar_to_exclude) {
+							// skip updating to preserve exclude state
+							continue;
+						}
+					}
+
+					// default: update OCR text
+					tf->latestOcrTexts[tid] = new_text;
+				}
+				{
+					std::lock_guard<std::mutex> refreshLock(tf->ocrMutex);
+					tf->lastOcrRefreshTime = std::chrono::steady_clock::now();
+				}
+			} catch (const std::exception &e) {
+				obs_log(LOG_ERROR, "OCR inference exception: %s", e.what());
+			}
+		}
+
 		lock.lock();
 	}
 }
@@ -176,8 +406,9 @@ obs_properties_t *detect_filter_properties(void *data)
 
 	obs_properties_t *props = obs_properties_create();
 
-	// preview toggle for the render preview overlay
-	// obs_properties_add_bool(props, "preview", obs_module_text("Preview"));
+	// preview toggle for the render preview overlay at the top
+	obs_properties_add_bool(props, "preview", obs_module_text("Preview"));
+
 
 	// options group for masking
 	obs_properties_t *masking_group = obs_properties_create();
@@ -185,12 +416,35 @@ obs_properties_t *detect_filter_properties(void *data)
 		obs_properties_add_group(props, "masking_group", obs_module_text("MaskingGroup"),
 					 OBS_GROUP_CHECKABLE, masking_group);
 
+obs_property_t *masking_type = obs_properties_add_list(
+		masking_group, "masking_type", obs_module_text("MaskingType"),
+		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeSolidColor"), "solid_color");
+	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeBlur"), "blur");
+	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypePixelate"), "pixelate");
+	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeInpaint"), "inpaint");
+	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeTransparent"), "transparent");
+
+	obs_properties_add_color(masking_group, "masking_color",
+				obs_module_text("MaskingColor"));
+	obs_properties_add_int_slider(masking_group, "masking_blur_radius",
+				obs_module_text("MaskingBlurRadius"), 0, 100, 1);
+	obs_properties_add_bool(masking_group, "async_inference",
+			      obs_module_text("AsyncInference"));
+	obs_properties_add_int_slider(masking_group, "dilation_iterations",
+				obs_module_text("DilationIterations"), 0, 50, 1);
+	obs_properties_add_float_slider(masking_group, "inpaint_radius",
+				obs_module_text("InpaintRadius"), 1.0, 200.0, 1.0);
+
+	// detection confidence threshold (inside masking group)
+	obs_properties_add_float_slider(masking_group, "threshold", obs_module_text("Threshold"), 0.0, 1.0, 0.01);
+
 	// add callback to show/hide masking options
 	obs_property_set_modified_callback(masking_group_prop, [](obs_properties_t *props_,
-								  obs_property_t *,
-								  obs_data_t *settings) {
+								obs_property_t *,
+								obs_data_t *settings) {
 		const bool enabled = obs_data_get_bool(settings, "masking_group");
-		obs_property_t *prop = obs_properties_get(props_, "masking_type");
+		obs_property_t *masking_type = obs_properties_get(props_, "masking_type");
 		obs_property_t *masking_color = obs_properties_get(props_, "masking_color");
 		obs_property_t *masking_blur_radius =
 			obs_properties_get(props_, "masking_blur_radius");
@@ -198,114 +452,102 @@ obs_properties_t *detect_filter_properties(void *data)
 			obs_properties_get(props_, "inpaint_radius");
 		obs_property_t *masking_dilation =
 			obs_properties_get(props_, "dilation_iterations");
+		obs_property_t *async_inference =
+			obs_properties_get(props_, "async_inference");
 
-		obs_property_set_visible(prop, enabled);
+		obs_property_set_visible(masking_type, enabled);
 		obs_property_set_visible(masking_color, false);
 		obs_property_set_visible(masking_blur_radius, false);
 		obs_property_set_visible(masking_inpaint_radius, false);
 		obs_property_set_visible(masking_dilation, enabled);
-		std::string masking_type_value = obs_data_get_string(settings, "masking_type");
-		if (masking_type_value == "solid_color") {
-			obs_property_set_visible(masking_color, enabled);
-		} else if (masking_type_value == "blur" || masking_type_value == "pixelate") {
-			obs_property_set_visible(masking_blur_radius, enabled);
-		} else if (masking_type_value == "inpaint") {
-			obs_property_set_visible(masking_inpaint_radius, enabled);
-		}
+		obs_property_set_visible(async_inference, enabled);
 		return true;
 	});
 
- 	// add masking options drop down selection: "None", "Solid color", "Blur", "Pixelate", "Transparent", "Inpaint"
- 	obs_property_t *masking_type = obs_properties_add_list(masking_group, "masking_type",
- 							       obs_module_text("MaskingType"),
- 							       OBS_COMBO_TYPE_LIST,
- 							       OBS_COMBO_FORMAT_STRING);
-  	// obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeNone"), "none");
-  	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeSolidColor"), "solid_color");
-  	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeBlur"), "blur");
-  	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypePixelate"), "pixelate");
-  	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeInpaint"), "inpaint");
-  	obs_property_list_add_string(masking_type, obs_module_text("MaskingTypeTransparent"), "transparent");
-
-
-	// add color picker for solid color masking
-	obs_properties_add_color(masking_group, "masking_color", obs_module_text("MaskingColor"));
-
-	// add slider for blur radius
-	obs_properties_add_int_slider(masking_group, "masking_blur_radius",
-				      obs_module_text("MaskingBlurRadius"), 1, 30, 1);
-
-	// add slider for inpaint radius
-	obs_properties_add_float_slider(masking_group, "inpaint_radius",
-				        obs_module_text("InpaintRadius"), 1.0, 200.0, 1.0);
-
-	// add callback to show/hide blur radius, inpaint radius, and color picker
-	obs_property_set_modified_callback(masking_type, [](obs_properties_t *props_,
-						    obs_property_t *,
-						    obs_data_t *settings) {
-		std::string masking_type_value = obs_data_get_string(settings, "masking_type");
-		obs_property_t *masking_color = obs_properties_get(props_, "masking_color");
-		obs_property_t *masking_blur_radius =
-			obs_properties_get(props_, "masking_blur_radius");
-		obs_property_t *masking_inpaint_radius =
-			obs_properties_get(props_, "inpaint_radius");
-		obs_property_t *masking_dilation =
-			obs_properties_get(props_, "dilation_iterations");
-		obs_property_set_visible(masking_color, false);
-		obs_property_set_visible(masking_blur_radius, false);
-		obs_property_set_visible(masking_inpaint_radius, false);
-		const bool masking_enabled = obs_data_get_bool(settings, "masking_group");
-		obs_property_set_visible(masking_dilation, masking_enabled);
-
-		if (masking_type_value == "solid_color") {
-			obs_property_set_visible(masking_color, masking_enabled);
-		} else if (masking_type_value == "blur" || masking_type_value == "pixelate") {
-			obs_property_set_visible(masking_blur_radius, masking_enabled);
-		} else if (masking_type_value == "inpaint") {
-			obs_property_set_visible(masking_inpaint_radius, masking_enabled);
-		}
-		return true;
-	});
-
- 	// add slider for dilation iterations
- 	obs_properties_add_int_slider(masking_group, "dilation_iterations",
- 				      obs_module_text("DilationIterations"), 0, 20, 1);
-
- 	obs_properties_add_float_slider(masking_group, "threshold", obs_module_text("Threshold"), 0.01,
- 				1.0, 0.01);
-
- 	// Asynchronous inference toggle
- 	obs_properties_add_bool(masking_group, "async_inference", obs_module_text("AsyncInference"));
- 	// obs_property_set_description(obs_properties_get(masking_group, "async_inference"),
- 	// 		obs_module_text("AsyncInferenceDescription"));
-
- 	// Exclude range group for detection exclusion area
- 	obs_properties_t *exclude_group = obs_properties_create();
- 	obs_property_t *exclude_group_prop =
- 		obs_properties_add_group(props, "exclude_group", obs_module_text("ExcludeGroup"),
- 					 OBS_GROUP_CHECKABLE, exclude_group);
-
- 	// add callback to show/hide exclude range options
- 	obs_property_set_modified_callback(exclude_group_prop, [](obs_properties_t *props_,
- 								  obs_property_t *,
- 								  obs_data_t *settings) {
- 		const bool enabled = obs_data_get_bool(settings, "exclude_group");
- 		obs_property_t *exclude_preview = obs_properties_get(props_, "exclude_preview");
- 		obs_property_t *exclude_left = obs_properties_get(props_, "exclude_left");
- 		obs_property_t *exclude_right = obs_properties_get(props_, "exclude_right");
- 		obs_property_t *exclude_top = obs_properties_get(props_, "exclude_top");
- 		obs_property_t *exclude_bottom = obs_properties_get(props_, "exclude_bottom");
-
- 		obs_property_set_visible(exclude_preview, enabled);
- 		obs_property_set_visible(exclude_left, enabled);
- 		obs_property_set_visible(exclude_right, enabled);
- 		obs_property_set_visible(exclude_top, enabled);
- 		obs_property_set_visible(exclude_bottom, enabled);
+ 	// add callback to show/hide blur radius, inpaint radius and async inference
+ 	obs_property_set_modified_callback(masking_type, [](obs_properties_t *props_,
+ 					obs_property_t *,
+ 					obs_data_t *settings) {
+ 		std::string masking_type_value = obs_data_get_string(settings, "masking_type");
+ 		obs_property_t *masking_color = obs_properties_get(props_, "masking_color");
+ 		obs_property_t *masking_blur_radius =
+ 			obs_properties_get(props_, "masking_blur_radius");
+ 		obs_property_t *masking_inpaint_radius =
+ 			obs_properties_get(props_, "inpaint_radius");
+ 		obs_property_t *masking_dilation =
+ 			obs_properties_get(props_, "dilation_iterations");
+ 		obs_property_t *async_inference =
+ 			obs_properties_get(props_, "async_inference");
+ 		obs_property_set_visible(masking_color, false);
+ 		obs_property_set_visible(masking_blur_radius, false);
+ 		obs_property_set_visible(masking_inpaint_radius, false);
+ 		const bool masking_enabled = obs_data_get_bool(settings, "masking_group");
+ 		obs_property_set_visible(masking_dilation, masking_enabled);
+ 		obs_property_set_visible(async_inference, masking_enabled);
+ 		if (masking_type_value == "solid_color") {
+ 			obs_property_set_visible(masking_color, masking_enabled);
+ 		} else if (masking_type_value == "blur" || masking_type_value == "pixelate") {
+ 			obs_property_set_visible(masking_blur_radius, masking_enabled);
+ 		} else if (masking_type_value == "inpaint") {
+ 			obs_property_set_visible(masking_inpaint_radius, masking_enabled);
+ 		}
  		return true;
  	});
 
- 	// add exclude preview toggle
- 	obs_properties_add_bool(exclude_group, "exclude_preview", obs_module_text("ExcludePreview"));
+ 	// name-based exclusion group
+ 	obs_properties_t *exclude_by_name_group = obs_properties_create();
+ 	obs_property_t *exclude_by_name_group_prop =
+ 		obs_properties_add_group(props, "exclude_by_name_group",
+ 				obs_module_text("ExcludeByNameGroup"), OBS_GROUP_CHECKABLE, exclude_by_name_group);
+	obs_property_t *ocr_refresh_interval = obs_properties_add_float_slider(
+		exclude_by_name_group, "ocr_refresh_interval",
+		obs_module_text("OCRRefreshInterval"), 1.0, 10.0, 0.5);
+	obs_property_set_visible(ocr_refresh_interval, false);
+	obs_property_t *ocr_expand_pixels = obs_properties_add_int_slider(
+		exclude_by_name_group, "ocr_expand_pixels",
+		obs_module_text("OCRExpandPixels"), 0, 5, 1);
+	obs_property_set_visible(ocr_expand_pixels, false);
+	obs_property_set_modified_callback(exclude_by_name_group_prop,
+		[](obs_properties_t *props_, obs_property_t *, obs_data_t *settings) {
+			const bool enabled = obs_data_get_bool(settings, "exclude_by_name_group");
+			obs_data_set_bool(settings, "tracking_group", enabled);
+			obs_data_set_bool(settings, "ocr_enabled", enabled);
+			obs_property_set_visible(obs_properties_get(props_, "ocr_refresh_interval"), enabled);
+			obs_property_set_visible(obs_properties_get(props_, "ocr_expand_pixels"), enabled);
+			obs_property_set_visible(obs_properties_get(props_, "mask_exclude_text"), enabled);
+			return true;
+		});
+
+	obs_properties_add_text(exclude_by_name_group, "mask_exclude_text",
+		obs_module_text("MaskExcludeText"), OBS_TEXT_DEFAULT);
+
+	// Exclude range group for detection exclusion area
+	obs_properties_t *exclude_group = obs_properties_create();
+	obs_property_t *exclude_group_prop =
+		obs_properties_add_group(props, "exclude_group", obs_module_text("ExcludeGroup"),
+					 OBS_GROUP_CHECKABLE, exclude_group);
+
+	// add callback to show/hide exclude range options
+	obs_property_set_modified_callback(exclude_group_prop, [](obs_properties_t *props_,
+						 obs_property_t *,
+						 obs_data_t *settings) {
+		const bool enabled = obs_data_get_bool(settings, "exclude_group");
+		obs_property_t *exclude_preview = obs_properties_get(props_, "exclude_preview");
+		obs_property_t *exclude_left = obs_properties_get(props_, "exclude_left");
+		obs_property_t *exclude_right = obs_properties_get(props_, "exclude_right");
+		obs_property_t *exclude_top = obs_properties_get(props_, "exclude_top");
+		obs_property_t *exclude_bottom = obs_properties_get(props_, "exclude_bottom");
+
+		obs_property_set_visible(exclude_preview, enabled);
+		obs_property_set_visible(exclude_left, enabled);
+		obs_property_set_visible(exclude_right, enabled);
+		obs_property_set_visible(exclude_top, enabled);
+		obs_property_set_visible(exclude_bottom, enabled);
+		return true;
+	});
+
+	// add exclude preview toggle
+	obs_properties_add_bool(exclude_group, "exclude_preview", obs_module_text("ExcludePreview"));
 
  	// determine slider limits from source resolution
  	int source_width = 1920;
@@ -355,8 +597,8 @@ void detect_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "max_unseen_frames", 10);
 	obs_data_set_default_bool(settings, "show_unseen_objects", true);
 	obs_data_set_default_int(settings, "numThreads", 1);
-	obs_data_set_default_bool(settings, "preview", true);
-	obs_data_set_default_double(settings, "threshold", 0.15);
+	obs_data_set_default_bool(settings, "preview", false);
+	obs_data_set_default_double(settings, "threshold", 0.09);
 	obs_data_set_default_string(settings, "model_size", "yolodetector");
 	obs_data_set_default_int(settings, "object_category", -1);
 	obs_data_set_default_bool(settings, "masking_group", true);
@@ -364,7 +606,14 @@ void detect_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, "masking_color", "#000000");
 	obs_data_set_default_int(settings, "masking_blur_radius", 3);
 	obs_data_set_default_int(settings, "dilation_iterations", 0);
+	obs_data_set_default_bool(settings, "exclude_by_name_group", false);
 	obs_data_set_default_bool(settings, "tracking_group", false);
+	obs_data_set_default_bool(settings, "ocr_enabled", true);
+	obs_data_set_default_string(settings, "ocr_model_path", "");
+	obs_data_set_default_string(settings, "ocr_dict_path", "");
+	obs_data_set_default_string(settings, "mask_exclude_text", "");
+	obs_data_set_default_double(settings, "ocr_refresh_interval", 1.5);
+	obs_data_set_default_int(settings, "ocr_expand_pixels", 3);
 	obs_data_set_default_double(settings, "zoom_factor", 0.0);
 	obs_data_set_default_double(settings, "zoom_speed_factor", 0.05);
 	obs_data_set_default_string(settings, "zoom_object", "single");
@@ -402,14 +651,41 @@ void detect_filter_update(void *data, obs_data_t *settings)
 	tf->conf_threshold = (float)obs_data_get_double(settings, "threshold");
 	tf->objectCategory = (int)obs_data_get_int(settings, "object_category");
 	tf->maskingEnabled = obs_data_get_bool(settings, "masking_group");
+	const bool exclude_by_name_enabled = obs_data_get_bool(settings, "exclude_by_name_group");
+	tf->trackingEnabled = exclude_by_name_enabled;
+	tf->ocrEnabled = exclude_by_name_enabled;
+	{
+		char *ocrModelPathPtr = obs_module_file("models/c_ppocr-v5-rec_sim.onnx");
+		if (ocrModelPathPtr) {
+			tf->ocrModelFilepath = ocrModelPathPtr;
+			bfree(ocrModelPathPtr);
+		} else {
+			tf->ocrModelFilepath.clear();
+			obs_log(LOG_ERROR, "Failed to resolve OCR model path via obs_module_file");
+		}
+	}
+	{
+		char *ocrDictPathPtr = obs_module_file("dict/ppocrv5_en_dict.txt");
+		if (ocrDictPathPtr) {
+			tf->ocrDictFilepath = ocrDictPathPtr;
+			bfree(ocrDictPathPtr);
+		} else {
+			tf->ocrDictFilepath.clear();
+			obs_log(LOG_ERROR, "Failed to resolve OCR dictionary path via obs_module_file");
+		}
+	}
+	tf->ocrRefreshInterval = obs_data_get_double(settings, "ocr_refresh_interval");
+	tf->ocrExpandPixels = (int)obs_data_get_int(settings, "ocr_expand_pixels");
+	if (!tf->ocrEnabled) {
+		tf->latestOcrTexts.clear();
+	}
 	tf->maskingType = obs_data_get_string(settings, "masking_type");
 	tf->maskingColor = (int)obs_data_get_int(settings, "masking_color");
 	tf->maskingBlurRadius = (int)obs_data_get_int(settings, "masking_blur_radius");
 	tf->maskingDilateIterations = (int)obs_data_get_int(settings, "dilation_iterations");
-
-	tf->showUnseenObjects = obs_data_get_bool(settings, "show_unseen_objects");
-	tf->saveDetectionsPath = obs_data_get_string(settings, "save_detections_path");
-	tf->crop_enabled = obs_data_get_bool(settings, "crop_group");
+	// read raw comma-separated string and parse into trimmed list
+	tf->maskExcludeText = obs_data_get_string(settings, "mask_exclude_text");
+	tf->maskExcludeTexts = split_comma_list(tf->maskExcludeText);
 	tf->crop_left = (int)obs_data_get_int(settings, "crop_left");
  	tf->crop_right = (int)obs_data_get_int(settings, "crop_right");
  	tf->crop_top = (int)obs_data_get_int(settings, "crop_top");
@@ -504,6 +780,29 @@ void detect_filter_update(void *data, obs_data_t *settings)
 				}
 
 			}
+
+			if (tf->ocrEnabled) {
+				if (!tf->ocrRecognizer) {
+					tf->ocrRecognizer = std::make_unique<ocr::PaddleOCRRecognizer>();
+				}
+				tf->ocrRecognizer->setUseDirectML(tf->useGPU == "dml" || tf->useGPU == "cuda");
+				if (tf->ocrDictFilepath.empty()) {
+					obs_log(LOG_ERROR, "OCR dictionary path is empty");
+					throw std::runtime_error("Failed to load OCR dictionary");
+				}
+				if (!tf->ocrRecognizer->loadDictionary(tf->ocrDictFilepath)) {
+					obs_log(LOG_ERROR, "Failed to load OCR dictionary from %s", tf->ocrDictFilepath.c_str());
+					throw std::runtime_error("Failed to load OCR dictionary");
+				}
+				if (tf->ocrModelFilepath.empty()) {
+					obs_log(LOG_ERROR, "OCR model path is empty");
+					throw std::runtime_error("Failed to load OCR model");
+				}
+				if (!tf->ocrRecognizer->loadModel(tf->ocrModelFilepath)) {
+					obs_log(LOG_ERROR, "Failed to load OCR model from %s", tf->ocrModelFilepath.c_str());
+					throw std::runtime_error("Failed to load OCR model");
+				}
+			}
 			// clear error message
 			obs_data_set_string(settings, "error", "");
 		} catch (const std::exception &e) {
@@ -535,8 +834,8 @@ void detect_filter_update(void *data, obs_data_t *settings)
 			obs_data_get_string(settings, "masking_color"));
 		obs_log(LOG_INFO, "  Masking Blur Radius: %d",
 			obs_data_get_int(settings, "masking_blur_radius"));
-		obs_log(LOG_INFO, "  Tracking Enabled: %s",
-			obs_data_get_bool(settings, "tracking_group") ? "true" : "false");
+		obs_log(LOG_INFO, "  Name-based exclusion enabled: %s",
+			obs_data_get_bool(settings, "exclude_by_name_group") ? "true" : "false");
 		obs_log(LOG_INFO, "  Zoom Factor: %.2f",
 			obs_data_get_double(settings, "zoom_factor"));
 		obs_log(LOG_INFO, "  Zoom Object: %s",
@@ -608,7 +907,10 @@ void *detect_filter_create(obs_data_t *settings, obs_source_t *source)
 
 	// Start asynchronous inference thread once the filter is created.
 	tf->stopInferenceThread = false;
+	tf->pendingOcrWork = false;
+	tf->stopOcrThread = false;
 	tf->inferenceThread = std::thread(inference_thread_proc, tf);
+	tf->ocrThread = std::thread(ocr_thread_proc, tf);
 
 	return tf;
 }
@@ -629,6 +931,15 @@ void detect_filter_destroy(void *data)
 		tf->inferenceCv.notify_one();
 		if (tf->inferenceThread.joinable()) {
 			tf->inferenceThread.join();
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(tf->ocrMutex);
+			tf->stopOcrThread = true;
+		}
+		tf->ocrCv.notify_one();
+		if (tf->ocrThread.joinable()) {
+			tf->ocrThread.join();
 		}
 
 		obs_enter_graphics();
@@ -778,13 +1089,38 @@ void detect_filter_video_tick(void *data, float seconds)
 		cv::Mat frame;
 		cv::cvtColor(imageBGRA, frame, cv::COLOR_BGRA2BGR);
 
-		// if (tf->preview && tf->crop_enabled) {
-		// 	// draw the crop rectangle on the frame in a dashed line
-		// 	drawDashedRectangle(frame, cropRect, cv::Scalar(0, 255, 0), 5, 8, 15);
-		// }
-		// if (tf->preview && objects.size() > 0) {
-		// 	draw_objects(frame, objects, classNames);
-		// }
+		if (tf->preview && tf->crop_enabled) {
+			// draw the crop rectangle on the frame in a dashed line
+			drawDashedRectangle(frame, cropRect, cv::Scalar(0, 255, 0), 5, 8, 15);
+		}
+		if (tf->preview && objects.size() > 0) {
+			draw_objects(frame, objects, classNames);
+			if (tf->ocrEnabled) {
+				std::lock_guard<std::mutex> ocrLock(tf->latestObjectsLock);
+				for (const auto &obj : objects) {
+					auto it = tf->latestOcrTexts.find(obj.id);
+					if (it == tf->latestOcrTexts.end() || it->second.empty()) {
+						continue;
+					}
+					const std::string &ocr_text = it->second;
+					int font_face = cv::FONT_HERSHEY_SIMPLEX;
+double font_scale = 0.5;
+int thickness = 1;
+int baseline = 0;
+std::string overlay_text = "ID" + std::to_string(obj.id) + ": " + it->second;
+cv::Size text_size = cv::getTextSize(overlay_text, font_face, font_scale, thickness, &baseline);
+int text_x = std::max(0, (int)obj.rect.x);
+int text_top = std::max(0, (int)obj.rect.y - (text_size.height + baseline + 8));
+cv::rectangle(frame,
+	cv::Point(text_x, text_top),
+	cv::Point(text_x + text_size.width, text_top + text_size.height + baseline + 6),
+	cv::Scalar(0, 0, 0), cv::FILLED);
+cv::Point text_origin(text_x, text_top + text_size.height + 2);
+					cv::putText(frame, overlay_text, text_origin, font_face, font_scale,
+						cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+				}
+			}
+		}
 
 		if (tf->preview && tf->exclude_group_enabled && tf->exclude_preview) {
 			cv::Rect excludeRect(
@@ -802,6 +1138,22 @@ void detect_filter_video_tick(void *data, float seconds)
 									tf->exclude_right, tf->exclude_top, tf->exclude_bottom,
 									frame.cols, frame.rows)) {
 					continue;  // Skip this detection - don't add to mask
+				}
+				if (!tf->maskExcludeTexts.empty() && tf->ocrEnabled) {
+					auto it = tf->latestOcrTexts.find(obj.id);
+					if (it != tf->latestOcrTexts.end()) {
+						const std::string &ocr_text = it->second;
+						bool excluded = false;
+						for (const auto &ex : tf->maskExcludeTexts) {
+							if (!ex.empty() && ocr_text == ex) {
+								excluded = true;
+								break;
+							}
+						}
+						if (excluded) {
+							continue; // Skip masking for this object when OCR text matches any exclude entry
+						}
+					}
 				}
 				cv::rectangle(mask, obj.rect, cv::Scalar(255), -1);
 			}

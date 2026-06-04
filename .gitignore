@@ -26,3 +26,5 @@
 # Exclude CMake build number cache
 /cmake/.CMakeBuildNumber
 data/models/my_yolov8m_s.onnx
+data/dict/ppocrv5_en_dict.txt
+data/models/c_ppocr-v5-rec_sim.onnx

@@ -4,7 +4,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake" NO_POLICY_SCO
 
 project(${_name} VERSION ${_version})
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
@@ -83,11 +83,24 @@ endif()
 # add the vendor folder to the include path
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE vendor)
 
+# add project src and eigen include paths for ByteTrack and adapters
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  "${CMAKE_CURRENT_SOURCE_DIR}/eigen-5.0.0")
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ByteTrack-cpp")
+
 # Set runtime library to match OpenCV (static MT/MTd) and disable warning-as-error
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE 
     $<$<CONFIG:Debug>:/MTd>
     $<$<NOT:$<CONFIG:Debug>>:/MT>
     $<$<CONFIG:Release>:/O2 /arch:AVX2>) 
+
+# Ensure MSVC uses C++20 std flag
+if(MSVC)
+  target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE /std:c++20)
+endif()
+
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
     LINK_FLAGS_DEBUG "/INCREMENTAL /OPT:NOREF"
@@ -101,7 +114,15 @@ target_sources(
           src/detect-filter-info.c
           src/detect-filter-utils.cpp
           src/obs-utils/obs-utils.cpp
+          src/ocr/PaddleOCRRecognizer.cpp
 
           src/yolodetector/YOLODetector.cpp)
+
+        target_sources(
+          ${CMAKE_PROJECT_NAME}
+          PRIVATE
+            src/ByteTrack-cpp/KalmanFilter.cpp
+            src/ByteTrack-cpp/Rect.cpp
+            src/ByteTrack-cpp/lapjv.cpp)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

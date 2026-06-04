@@ -37,8 +37,8 @@
         }
     },
     "name": "obs-wolnamesblackedout",
-    "displayName": "OBS WoLNamesBlackedOut plugin",
-    "version": "1.0.6",
+    "displayName": "WoLNamesBlackedOut for OBS",
+    "version": "1.1.0",
     "author": "Calocen Rieti",
     "website": "https://blog.calocenrieti.com/blog/obs-wolnamesblackedout/",
     "email": "",
