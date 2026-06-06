@@ -115,6 +115,8 @@ struct filter_data {
 	bool ocrEnabled = false;
 	double ocrRefreshInterval = 3.0;
 	int ocrExpandPixels = 0;
+	double ocrInitialThreshold = 0.8;
+	double ocrContinueThreshold = 0.7;
 	std::chrono::steady_clock::time_point lastOcrRefreshTime = std::chrono::steady_clock::now();
 
 	// Asynchronous inference toggle

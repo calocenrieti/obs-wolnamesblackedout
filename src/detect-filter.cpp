@@ -101,6 +101,41 @@ static double levenshtein_similarity(const std::string &a_in, const std::string 
 	return 1.0 - (double)dist / (double)maxlen;
 }
 
+// Check if OCR text partially matches exclude text by comparing parts before/after space
+static bool is_partial_match(const std::string &ocr_text, const std::string &exclude_text)
+{
+	size_t ocr_space = ocr_text.find(' ');
+	size_t exclude_space = exclude_text.find(' ');
+
+	// Check first part (before space)
+	{
+		std::string ocr_first = (ocr_space != std::string::npos) ? ocr_text.substr(0, ocr_space) : ocr_text;
+		std::string exclude_first = (exclude_space != std::string::npos) ? exclude_text.substr(0, exclude_space) : exclude_text;
+
+		if (!ocr_first.empty() && !exclude_first.empty()) {
+			double ratio = (double)ocr_first.length() / (double)exclude_first.length();
+			if (ratio >= 0.7 && exclude_first.find(ocr_first) != std::string::npos) {
+				return true;
+			}
+		}
+	}
+
+	// Check second part (after space)
+	{
+		std::string ocr_second = (ocr_space != std::string::npos) ? ocr_text.substr(ocr_space + 1) : "";
+		std::string exclude_second = (exclude_space != std::string::npos) ? exclude_text.substr(exclude_space + 1) : "";
+
+		if (!ocr_second.empty() && !exclude_second.empty()) {
+			double ratio = (double)ocr_second.length() / (double)exclude_second.length();
+			if (ratio >= 0.7 && exclude_second.find(ocr_second) != std::string::npos) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 struct detect_filter : public filter_data {};
 
 /**
@@ -324,12 +359,17 @@ static void ocr_thread_proc(detect_filter *tf)
 
 					if (prev_matched_exclude && !tf->maskExcludeTexts.empty()) {
 						// If previously matched an exclude entry, and new OCR is similar to
-						// any exclude entry (>= 0.7), keep previous text (continue to exclude).
+						// any exclude entry (>= ocrContinueThreshold), keep previous text (continue to exclude).
 						bool similar_to_exclude = false;
 						for (const auto &ex : tf->maskExcludeTexts) {
 							if (ex.empty()) continue;
 							double sim = levenshtein_similarity(new_text, ex);
-							if (sim >= 0.7) {
+							if (sim >= tf->ocrContinueThreshold) {
+								similar_to_exclude = true;
+								break;
+							}
+							// Also check partial match by space-separated parts
+							if (is_partial_match(new_text, ex)) {
 								similar_to_exclude = true;
 								break;
 							}
@@ -433,8 +473,8 @@ obs_property_t *masking_type = obs_properties_add_list(
 			      obs_module_text("AsyncInference"));
 	obs_properties_add_int_slider(masking_group, "dilation_iterations",
 				obs_module_text("DilationIterations"), 0, 50, 1);
-	obs_properties_add_float_slider(masking_group, "inpaint_radius",
-				obs_module_text("InpaintRadius"), 1.0, 200.0, 1.0);
+	obs_properties_add_int_slider(masking_group, "inpaint_radius",
+				obs_module_text("InpaintRadius"), 1, 200, 1);
 
 	// detection confidence threshold (inside masking group)
 	obs_properties_add_float_slider(masking_group, "threshold", obs_module_text("Threshold"), 0.0, 1.0, 0.01);
@@ -507,6 +547,11 @@ obs_property_t *masking_type = obs_properties_add_list(
 		exclude_by_name_group, "ocr_expand_pixels",
 		obs_module_text("OCRExpandPixels"), 0, 5, 1);
 	obs_property_set_visible(ocr_expand_pixels, false);
+	obs_property_t *ocr_initial_threshold = obs_properties_add_int_slider(
+		exclude_by_name_group, "ocr_initial_threshold",
+		obs_module_text("OCRInitialThreshold"), 50, 100, 1);
+	obs_property_int_set_suffix(ocr_initial_threshold, "%");
+	obs_property_set_visible(ocr_initial_threshold, false);
 	obs_property_set_modified_callback(exclude_by_name_group_prop,
 		[](obs_properties_t *props_, obs_property_t *, obs_data_t *settings) {
 			const bool enabled = obs_data_get_bool(settings, "exclude_by_name_group");
@@ -514,6 +559,7 @@ obs_property_t *masking_type = obs_properties_add_list(
 			obs_data_set_bool(settings, "ocr_enabled", enabled);
 			obs_property_set_visible(obs_properties_get(props_, "ocr_refresh_interval"), enabled);
 			obs_property_set_visible(obs_properties_get(props_, "ocr_expand_pixels"), enabled);
+			obs_property_set_visible(obs_properties_get(props_, "ocr_initial_threshold"), enabled);
 			obs_property_set_visible(obs_properties_get(props_, "mask_exclude_text"), enabled);
 			return true;
 		});
@@ -597,8 +643,8 @@ void detect_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "max_unseen_frames", 10);
 	obs_data_set_default_bool(settings, "show_unseen_objects", true);
 	obs_data_set_default_int(settings, "numThreads", 1);
-	obs_data_set_default_bool(settings, "preview", false);
-	obs_data_set_default_double(settings, "threshold", 0.09);
+	obs_data_set_default_bool(settings, "preview", true);
+	obs_data_set_default_double(settings, "threshold", 0.15);
 	obs_data_set_default_string(settings, "model_size", "yolodetector");
 	obs_data_set_default_int(settings, "object_category", -1);
 	obs_data_set_default_bool(settings, "masking_group", true);
@@ -608,12 +654,13 @@ void detect_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "dilation_iterations", 0);
 	obs_data_set_default_bool(settings, "exclude_by_name_group", false);
 	obs_data_set_default_bool(settings, "tracking_group", false);
-	obs_data_set_default_bool(settings, "ocr_enabled", true);
+	obs_data_set_default_bool(settings, "ocr_enabled", false);
 	obs_data_set_default_string(settings, "ocr_model_path", "");
 	obs_data_set_default_string(settings, "ocr_dict_path", "");
 	obs_data_set_default_string(settings, "mask_exclude_text", "");
-	obs_data_set_default_double(settings, "ocr_refresh_interval", 1.5);
-	obs_data_set_default_int(settings, "ocr_expand_pixels", 3);
+	obs_data_set_default_double(settings, "ocr_refresh_interval", 3.0);
+	obs_data_set_default_int(settings, "ocr_expand_pixels", 0);
+	obs_data_set_default_int(settings, "ocr_initial_threshold", 80);
 	obs_data_set_default_double(settings, "zoom_factor", 0.0);
 	obs_data_set_default_double(settings, "zoom_speed_factor", 0.05);
 	obs_data_set_default_string(settings, "zoom_object", "single");
@@ -633,7 +680,7 @@ void detect_filter_defaults(obs_data_t *settings)
  	obs_data_set_default_int(settings, "exclude_bottom", 0);
 
  	// Inpaint effect defaults
- 	obs_data_set_default_double(settings, "inpaint_radius", 70.0);
+ 	obs_data_set_default_int(settings, "inpaint_radius", 70);
 
  	// Asynchronous inference default
  	obs_data_set_default_bool(settings, "async_inference", true);
@@ -676,6 +723,8 @@ void detect_filter_update(void *data, obs_data_t *settings)
 	}
 	tf->ocrRefreshInterval = obs_data_get_double(settings, "ocr_refresh_interval");
 	tf->ocrExpandPixels = (int)obs_data_get_int(settings, "ocr_expand_pixels");
+	tf->ocrInitialThreshold = (float)obs_data_get_int(settings, "ocr_initial_threshold") / 100.0f;
+	tf->ocrContinueThreshold = tf->ocrInitialThreshold - 0.1f;
 	if (!tf->ocrEnabled) {
 		tf->latestOcrTexts.clear();
 	}
@@ -701,7 +750,7 @@ void detect_filter_update(void *data, obs_data_t *settings)
  	tf->minAreaThreshold = (int)obs_data_get_int(settings, "min_size_threshold");
 
  	// Inpaint parameters
- 	tf->inpaintRadius = (float)obs_data_get_double(settings, "inpaint_radius");
+ 	tf->inpaintRadius = (float)obs_data_get_int(settings, "inpaint_radius");
 
  	// Asynchronous inference setting
  	tf->asyncInference = obs_data_get_bool(settings, "async_inference");
@@ -1145,7 +1194,15 @@ cv::Point text_origin(text_x, text_top + text_size.height + 2);
 						const std::string &ocr_text = it->second;
 						bool excluded = false;
 						for (const auto &ex : tf->maskExcludeTexts) {
-							if (!ex.empty() && ocr_text == ex) {
+							if (ex.empty()) continue;
+							// exact match
+							if (ocr_text == ex) {
+								excluded = true;
+								break;
+							}
+							// Levenshtein similarity check (0.0 - 1.0), treat >= ocrInitialThreshold as match
+							double sim = levenshtein_similarity(ocr_text, ex);
+							if (sim >= tf->ocrInitialThreshold) {
 								excluded = true;
 								break;
 							}
