@@ -39,20 +39,10 @@ struct filter_data {
    	float inpaintRadius;
 
  	bool trackingEnabled;
-	float zoomFactor;
-	float zoomSpeedFactor;
-	std::string zoomObject;
+
 	obs_source_t *trackingFilter;
 	cv::Rect2f trackingRect;
 	int lastDetectedObjectId;
-	bool sortTracking;
-	bool showUnseenObjects;
-	std::string saveDetectionsPath;
-	bool crop_enabled;
-	int crop_left;
-	int crop_right;
-	int crop_top;
-	int crop_bottom;
 
 	// Exclude range parameters (detection exclusion area)
 	bool exclude_group_enabled;
@@ -61,9 +51,6 @@ struct filter_data {
 	int exclude_right;
 	int exclude_top;
 	int exclude_bottom;
-
-	// // create SORT tracker
-	// Sort tracker;
 
 	obs_source_t *source;
 	gs_texrender_t *texrender;

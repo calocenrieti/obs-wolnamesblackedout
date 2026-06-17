@@ -10,10 +10,6 @@
 #include <windows.h>
 #endif
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
 namespace ocr {
 
 PaddleOCRRecognizer::PaddleOCRRecognizer()
@@ -186,21 +182,21 @@ std::vector<float> PaddleOCRRecognizer::preprocessImage(const cv::Mat &image, in
     cv::Mat resized;
     cv::resize(roi, resized, cv::Size(resizedWidth, targetHeight), 0, 0, cv::INTER_LINEAR);
 
-    cv::Mat floatImg;
-    resized.convertTo(floatImg, CV_32FC3, 1.0f / 127.5f, -1.0f);
+    cv::Mat resizedFloat;
+    resized.convertTo(resizedFloat, CV_32FC3, 1.0f / 127.5f, -1.0f);
 
     cv::Mat padded(targetHeight, maxWidth, CV_32FC3, cv::Scalar(0.0f, 0.0f, 0.0f));
-    floatImg.copyTo(padded(cv::Rect(0, 0, resized.cols, resized.rows)));
+    resizedFloat.copyTo(padded(cv::Rect(0, 0, resizedFloat.cols, resizedFloat.rows)));
+
+    cv::Mat blob = cv::dnn::blobFromImage(padded, 1.0f, cv::Size(maxWidth, targetHeight), cv::Scalar(0, 0, 0), false, false, CV_32F);
 
     std::vector<float> result;
-    result.reserve(maxWidth * targetHeight * 3);
-    for (int c = 0; c < 3; c++) {
-        for (int y = 0; y < targetHeight; y++) {
-            for (int x = 0; x < maxWidth; x++) {
-                result.push_back(padded.at<cv::Vec3f>(y, x)[c]);
-            }
-        }
+    if (blob.isContinuous()) {
+        result.assign(blob.ptr<float>(), blob.ptr<float>() + blob.total());
+    } else {
+        result.assign(blob.begin<float>(), blob.end<float>());
     }
+
     return result;
 }
 

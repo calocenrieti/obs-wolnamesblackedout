@@ -630,7 +630,7 @@ obs_property_t *masking_type = obs_properties_add_list(
 
 void detect_filter_defaults(obs_data_t *settings)
 {
-	obs_data_set_default_bool(settings, "advanced", false);
+	// obs_data_set_default_bool(settings, "advanced", false);
 #if _WIN32
 	obs_data_set_default_string(settings, "useGPU", USEGPU_DML);
 #elif defined(__APPLE__)
@@ -639,9 +639,6 @@ void detect_filter_defaults(obs_data_t *settings)
 	// Linux
 	obs_data_set_default_string(settings, "useGPU", USEGPU_CPU);
 #endif
-	obs_data_set_default_bool(settings, "sort_tracking", false);
-	obs_data_set_default_int(settings, "max_unseen_frames", 10);
-	obs_data_set_default_bool(settings, "show_unseen_objects", true);
 	obs_data_set_default_int(settings, "numThreads", 1);
 	obs_data_set_default_bool(settings, "preview", true);
 	obs_data_set_default_double(settings, "threshold", 0.15);
@@ -661,15 +658,6 @@ void detect_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_double(settings, "ocr_refresh_interval", 3.0);
 	obs_data_set_default_int(settings, "ocr_expand_pixels", 0);
 	obs_data_set_default_int(settings, "ocr_initial_threshold", 80);
-	obs_data_set_default_double(settings, "zoom_factor", 0.0);
-	obs_data_set_default_double(settings, "zoom_speed_factor", 0.05);
-	obs_data_set_default_string(settings, "zoom_object", "single");
-	obs_data_set_default_string(settings, "save_detections_path", "");
- 	obs_data_set_default_bool(settings, "crop_group", false);
- 	obs_data_set_default_int(settings, "crop_left", 0);
- 	obs_data_set_default_int(settings, "crop_right", 0);
- 	obs_data_set_default_int(settings, "crop_top", 0);
- 	obs_data_set_default_int(settings, "crop_bottom", 0);
 
  	// Exclude range defaults
  	obs_data_set_default_bool(settings, "exclude_group", false);
@@ -735,10 +723,6 @@ void detect_filter_update(void *data, obs_data_t *settings)
 	// read raw comma-separated string and parse into trimmed list
 	tf->maskExcludeText = obs_data_get_string(settings, "mask_exclude_text");
 	tf->maskExcludeTexts = split_comma_list(tf->maskExcludeText);
-	tf->crop_left = (int)obs_data_get_int(settings, "crop_left");
- 	tf->crop_right = (int)obs_data_get_int(settings, "crop_right");
- 	tf->crop_top = (int)obs_data_get_int(settings, "crop_top");
- 	tf->crop_bottom = (int)obs_data_get_int(settings, "crop_bottom");
 
  	tf->exclude_group_enabled = obs_data_get_bool(settings, "exclude_group");
  	tf->exclude_preview = obs_data_get_bool(settings, "exclude_preview");
@@ -885,10 +869,6 @@ void detect_filter_update(void *data, obs_data_t *settings)
 			obs_data_get_int(settings, "masking_blur_radius"));
 		obs_log(LOG_INFO, "  Name-based exclusion enabled: %s",
 			obs_data_get_bool(settings, "exclude_by_name_group") ? "true" : "false");
-		obs_log(LOG_INFO, "  Zoom Factor: %.2f",
-			obs_data_get_double(settings, "zoom_factor"));
-		obs_log(LOG_INFO, "  Zoom Object: %s",
-			obs_data_get_string(settings, "zoom_object"));
 		obs_log(LOG_INFO, "  Disabled: %s", tf->isDisabled ? "true" : "false");
 #ifdef _WIN32
 		obs_log(LOG_INFO, "  Model file path: %ls", tf->modelFilepath.c_str());
@@ -1036,16 +1016,7 @@ void detect_filter_video_tick(void *data, float seconds)
 	}
 
 	cv::Mat inferenceFrame;
-
-	cv::Rect cropRect(0, 0, imageBGRA.cols, imageBGRA.rows);
-	if (tf->crop_enabled) {
-		cropRect = cv::Rect(tf->crop_left, tf->crop_top,
-				    imageBGRA.cols - tf->crop_left - tf->crop_right,
-				    imageBGRA.rows - tf->crop_top - tf->crop_bottom);
-		cv::cvtColor(imageBGRA(cropRect), inferenceFrame, cv::COLOR_BGRA2BGR);
-	} else {
-		cv::cvtColor(imageBGRA, inferenceFrame, cv::COLOR_BGRA2BGR);
-	}
+	cv::cvtColor(imageBGRA, inferenceFrame, cv::COLOR_BGRA2BGR);
 
 	{
 		std::lock_guard<std::mutex> lock(tf->inferenceMutex);
@@ -1069,14 +1040,6 @@ void detect_filter_video_tick(void *data, float seconds)
 		std::lock_guard<std::mutex> lock(tf->latestObjectsLock);
 		objects = tf->latestInferenceObjects;
 		classNames = tf->classNames;
-	}
-
-	if (tf->crop_enabled) {
-		// translate the detected objects to the original frame
-		for (Object &obj : objects) {
-			obj.rect.x += (float)cropRect.x;
-			obj.rect.y += (float)cropRect.y;
-		}
 	}
 
 	// update the detected object text input for YOLODetector with index-based class names
@@ -1125,23 +1088,10 @@ void detect_filter_video_tick(void *data, float seconds)
 		objects = filtered_objects;
 	}
 
-
-	if (!tf->showUnseenObjects) {
-		objects.erase(
-			std::remove_if(objects.begin(), objects.end(),
-				       [](const Object &obj) { return obj.unseenFrames > 0; }),
-			objects.end());
-	}
-
-
 	if (tf->preview || tf->maskingEnabled) {
 		cv::Mat frame;
 		cv::cvtColor(imageBGRA, frame, cv::COLOR_BGRA2BGR);
 
-		if (tf->preview && tf->crop_enabled) {
-			// draw the crop rectangle on the frame in a dashed line
-			drawDashedRectangle(frame, cropRect, cv::Scalar(0, 255, 0), 5, 8, 15);
-		}
 		if (tf->preview && objects.size() > 0) {
 			draw_objects(frame, objects, classNames);
 			if (tf->ocrEnabled) {
@@ -1153,18 +1103,18 @@ void detect_filter_video_tick(void *data, float seconds)
 					}
 					const std::string &ocr_text = it->second;
 					int font_face = cv::FONT_HERSHEY_SIMPLEX;
-double font_scale = 0.5;
-int thickness = 1;
-int baseline = 0;
-std::string overlay_text = "ID" + std::to_string(obj.id) + ": " + it->second;
-cv::Size text_size = cv::getTextSize(overlay_text, font_face, font_scale, thickness, &baseline);
-int text_x = std::max(0, (int)obj.rect.x);
-int text_top = std::max(0, (int)obj.rect.y - (text_size.height + baseline + 8));
-cv::rectangle(frame,
-	cv::Point(text_x, text_top),
-	cv::Point(text_x + text_size.width, text_top + text_size.height + baseline + 6),
-	cv::Scalar(0, 0, 0), cv::FILLED);
-cv::Point text_origin(text_x, text_top + text_size.height + 2);
+					double font_scale = 0.5;
+					int thickness = 1;
+					int baseline = 0;
+					std::string overlay_text = "ID" + std::to_string(obj.id) + ": " + it->second;
+					cv::Size text_size = cv::getTextSize(overlay_text, font_face, font_scale, thickness, &baseline);
+					int text_x = std::max(0, (int)obj.rect.x);
+					int text_top = std::max(0, (int)obj.rect.y - (text_size.height + baseline + 8));
+					cv::rectangle(frame,
+						cv::Point(text_x, text_top),
+						cv::Point(text_x + text_size.width, text_top + text_size.height + baseline + 6),
+						cv::Scalar(0, 0, 0), cv::FILLED);
+					cv::Point text_origin(text_x, text_top + text_size.height + 2);
 					cv::putText(frame, overlay_text, text_origin, font_face, font_scale,
 						cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
 				}

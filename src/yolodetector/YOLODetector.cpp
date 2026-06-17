@@ -137,6 +137,10 @@ bool YOLODetector::loadModel(const char* model_path)
 // 推論実行
 std::optional<std::vector<YOLODetector::BoundingBox>> YOLODetector::inference(const cv::Mat& image, float conf_threshold)
 {
+    if (image.empty() || image.rows == 0 || image.cols == 0) {
+        return std::vector<BoundingBox>();
+    }
+
     const int N = 1;   // batch size
     const int C = 3;   // number of channels
     const int W = 1280; // width
@@ -183,8 +187,8 @@ std::optional<std::vector<YOLODetector::BoundingBox>> YOLODetector::inference(co
 
     // blob 作成
     cv::Mat blob;
-    cv::cvtColor(paddedImg, blob, cv::COLOR_BGR2RGB);
-    cv::dnn::blobFromImage(blob, blob, 1.0 / 255.0, cv::Size(), 
+
+    cv::dnn::blobFromImage(paddedImg, blob, 1.0 / 255.0, cv::Size(), 
                            cv::Scalar(0, 0, 0), true, false);
 
     std::vector<int64_t> input_tensor_shape = { static_cast<int64_t>(N), static_cast<int64_t>(C), 
@@ -299,7 +303,7 @@ std::vector<Object> YOLODetector::convertToObjects(const std::vector<BoundingBox
         obj.label = bbox.index;          // 単純増加インデックスを label に代入
         obj.prob = bbox.score;           // 信頼度スコアを prob に代入
         obj.id = 0;                      // ID は後から設定（トラッキング用）
-        obj.unseenFrames = 0;            // 未検出フレームカウント
+        // obj.unseenFrames = 0;            // 未検出フレームカウント
         // kf(KalmanFilter) は必要に応じて初期化
         
         objects.push_back(obj);
