@@ -7,6 +7,7 @@ struct OrtDmlApi;
 
 #include <opencv2/opencv.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -24,6 +25,7 @@ public:
     ~PaddleOCRRecognizer();
 
     void setUseDirectML(bool useDirectML);
+    void setNumThreads(uint32_t numThreads);
     bool loadDictionary(const std::string &dict_file);
     bool loadModel(const std::string &model_path);
     bool isReady() const;
@@ -33,7 +35,7 @@ public:
 private:
     bool initializeDirectML();
     bool prepareSessionIO();
-    std::vector<float> preprocessImage(const cv::Mat &image, int targetHeight, int maxWidth) const;
+    void preprocessImageToBuffer(const cv::Mat &image, int targetHeight, int maxWidth, float *outBuffer) const;
     OCRResult decodeSequence(const float *data, int64_t seqLength, int64_t vocabSize) const;
 
     std::unique_ptr<Ort::Env> env_;
@@ -48,6 +50,7 @@ private:
     std::vector<const char *> output_node_names_;
 
     std::vector<std::string> character_list_;
+    uint32_t num_threads_ = 1;
     bool use_directml_ = false;
     bool is_ready_ = false;
 };

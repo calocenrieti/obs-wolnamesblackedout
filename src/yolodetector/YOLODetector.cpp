@@ -23,6 +23,11 @@ struct YOLODetector::Private {
     std::vector<std::string> output_node_name_strings;
 
     bool use_directml = false;
+    uint32_t num_threads = 1;
+
+    cv::Mat resized_img;
+    cv::Mat padded_img;
+    std::vector<float> input_tensor_buffer;
     
     // DirectML 用
 #ifdef _WIN32
@@ -45,7 +50,7 @@ YOLODetector::YOLODetector()
         
         m_->session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         m_->session_options.SetLogSeverityLevel(3);
-        m_->session_options.SetIntraOpNumThreads(1);
+        m_->session_options.SetIntraOpNumThreads(static_cast<int>(m_->num_threads));
     }
     catch (const std::exception& e) {
         // 初期化エラーは内部で吸収
@@ -141,6 +146,8 @@ std::optional<std::vector<YOLODetector::BoundingBox>> YOLODetector::inference(co
         return std::vector<BoundingBox>();
     }
 
+    std::lock_guard<std::mutex> lock(mutex_);
+
     const int N = 1;   // batch size
     const int C = 3;   // number of channels
     const int W = 1280; // width
@@ -150,7 +157,7 @@ std::optional<std::vector<YOLODetector::BoundingBox>> YOLODetector::inference(co
     float targetRatio = static_cast<float>(W) / H;
     float imgRatio = static_cast<float>(image.cols) / image.rows;
     
-    cv::Mat resizedImg;
+    cv::Mat &resizedImg = m_->resized_img;
     float padX = 0, padY = 0;  // パディング量
     float scaleX = 1.0f, scaleY = 1.0f;  // スケール倍率
 
@@ -178,26 +185,43 @@ std::optional<std::vector<YOLODetector::BoundingBox>> YOLODetector::inference(co
     }
 
     // パディング（黒塗り）の適用
-    cv::Mat paddedImg(H, W, CV_8UC3, cv::Scalar(0, 0, 0));
+    if (m_->padded_img.empty() || m_->padded_img.cols != W || m_->padded_img.rows != H) {
+        m_->padded_img.create(H, W, CV_8UC3);
+    }
+    cv::Mat &paddedImg = m_->padded_img;
+    paddedImg.setTo(cv::Scalar(0, 0, 0));
     resizedImg.copyTo(paddedImg(cv::Rect(static_cast<int>(padX), static_cast<int>(padY), 
                                           resizedImg.cols, resizedImg.rows)));
 
     // リサイズ倍率を保存（座標逆変換用）
     resizeScales = std::max(scaleX, scaleY);
 
-    // blob 作成
-    cv::Mat blob;
-
-    cv::dnn::blobFromImage(paddedImg, blob, 1.0 / 255.0, cv::Size(), 
-                           cv::Scalar(0, 0, 0), true, false);
+    // Convert HWC BGR uint8 -> CHW RGB float in a reusable buffer.
+    const size_t plane = static_cast<size_t>(W) * static_cast<size_t>(H);
+    const size_t inputSize = static_cast<size_t>(C) * plane;
+    if (m_->input_tensor_buffer.size() != inputSize) {
+        m_->input_tensor_buffer.resize(inputSize);
+    }
+    float *inputData = m_->input_tensor_buffer.data();
+    const float norm = 1.0f / 255.0f;
+    for (int y = 0; y < H; ++y) {
+        const cv::Vec3b *row = paddedImg.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < W; ++x) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(W) + static_cast<size_t>(x);
+            const cv::Vec3b &bgr = row[x];
+            inputData[idx] = static_cast<float>(bgr[2]) * norm;
+            inputData[idx + plane] = static_cast<float>(bgr[1]) * norm;
+            inputData[idx + (2 * plane)] = static_cast<float>(bgr[0]) * norm;
+        }
+    }
 
     std::vector<int64_t> input_tensor_shape = { static_cast<int64_t>(N), static_cast<int64_t>(C), 
                                                  static_cast<int64_t>(H), static_cast<int64_t>(W) };
     
     Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
         *m_->memory_info,
-        blob.ptr<float>(),
-        static_cast<size_t>(blob.total()),
+        inputData,
+        inputSize,
         input_tensor_shape.data(),
         input_tensor_shape.size()
     );
@@ -318,6 +342,15 @@ void YOLODetector::setUseGPU(bool useGPU)
     m_->use_directml = useGPU;
 }
 
+void YOLODetector::setNumThreads(uint32_t numThreads)
+{
+    m_->num_threads = std::max<uint32_t>(1, numThreads);
+    m_->session_options.SetIntraOpNumThreads(static_cast<int>(m_->num_threads));
+#ifdef _WIN32
+    m_->session_options_dml.SetIntraOpNumThreads(static_cast<int>(m_->num_threads));
+#endif
+}
+
 // DirectML 初期化（Windows のみ）
 bool YOLODetector::initializeDirectML()
 {
@@ -327,7 +360,7 @@ bool YOLODetector::initializeDirectML()
         
         m_->session_options_dml.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         m_->session_options_dml.SetLogSeverityLevel(3);
-        m_->session_options_dml.SetIntraOpNumThreads(1);
+        m_->session_options_dml.SetIntraOpNumThreads(static_cast<int>(m_->num_threads));
 
         // ONNX Runtime の API を使用して DML エクスプローラーを取得・追加
         const auto& api = Ort::GetApi();

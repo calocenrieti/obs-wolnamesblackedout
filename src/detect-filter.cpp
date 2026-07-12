@@ -10,6 +10,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <numeric>
+#include <cstdint>
 #include <memory>
 #include <exception>
 #include <fstream>
@@ -28,6 +29,56 @@
 #include "ocr/PaddleOCRRecognizer.h"
 
 #include "yolodetector/YOLODetector.h"
+
+static inline void update_running_avg(double &avg, uint64_t &samples, double value)
+{
+	++samples;
+	avg += (value - avg) / static_cast<double>(samples);
+}
+
+static uint32_t recommend_num_threads(const std::string &use_gpu)
+{
+	const bool using_gpu = (use_gpu == "dml" || use_gpu == "cuda");
+	if (using_gpu) {
+		// Keep CPU-side ORT thread pool small when GPU EP is active.
+		return 1;
+	}
+
+	const unsigned int hw = std::thread::hardware_concurrency();
+	if (hw == 0) {
+		return 1;
+	}
+	if (hw <= 4) {
+		return 1;
+	}
+	if (hw <= 8) {
+		return 2;
+	}
+	if (hw <= 16) {
+		return 3;
+	}
+	return 4;
+}
+
+static double recommend_ocr_refresh_interval_sec(filter_data *tf)
+{
+	double ocr_ms_avg = 0.0;
+	{
+		std::lock_guard<std::mutex> perfLock(tf->perfStatsMutex);
+		ocr_ms_avg = tf->perfOcrMsAvg;
+	}
+
+	if (ocr_ms_avg >= 30.0) {
+		return 5.0;
+	}
+	if (ocr_ms_avg >= 20.0) {
+		return 3.0;
+	}
+	if (ocr_ms_avg >= 12.0) {
+		return 2.0;
+	}
+	return 1.0;
+}
 
 // utility: trim whitespace
 static inline std::string trim_copy(const std::string &s)
@@ -196,7 +247,7 @@ static void inference_thread_proc(detect_filter *tf)
 			break;
 		}
 
-		cv::Mat frame = tf->pendingInferenceFrame.clone();
+		cv::Mat frame = std::move(tf->pendingInferenceFrame);
 		tf->pendingInferenceFrameReady = false;
 		lock.unlock();
 
@@ -206,7 +257,15 @@ static void inference_thread_proc(detect_filter *tf)
 		try {
 			std::unique_lock<std::mutex> modelLock(tf->modelMutex);
 			if (tf->yolodetector) {
+				const auto yolo_start = std::chrono::steady_clock::now();
 				auto bboxes_opt = tf->yolodetector->inference(frame, tf->conf_threshold);
+				const auto yolo_end = std::chrono::steady_clock::now();
+				const double yolo_ms =
+					std::chrono::duration<double, std::milli>(yolo_end - yolo_start).count();
+				{
+					std::lock_guard<std::mutex> perfLock(tf->perfStatsMutex);
+					update_running_avg(tf->perfYoloMsAvg, tf->perfYoloSamples, yolo_ms);
+				}
 				if (bboxes_opt.has_value()) {
 					objects = tf->yolodetector->convertToObjects(bboxes_opt.value());
 					for (const auto &obj : objects) {
@@ -240,11 +299,12 @@ static void inference_thread_proc(detect_filter *tf)
 					const bool do_ocr = tf->ocrEnabled && tf->ocrRecognizer && tf->ocrRecognizer->isReady();
 					auto now = std::chrono::steady_clock::now();
 					bool needs_ocr_refresh = false;
+					const double refresh_interval_sec = recommend_ocr_refresh_interval_sec(tf);
 					{
 						std::lock_guard<std::mutex> ocrLock(tf->ocrMutex);
 						needs_ocr_refresh = do_ocr &&
 							(now - tf->lastOcrRefreshTime) >=
-							std::chrono::duration<double>(tf->ocrRefreshInterval) &&
+							std::chrono::duration<double>(refresh_interval_sec) &&
 							!tf->pendingOcrWork;
 					}
 					for (const auto &ut : tracked) {
@@ -263,6 +323,10 @@ static void inference_thread_proc(detect_filter *tf)
 
 						const bool missing_text = (tf->latestOcrTexts.find(track_id) == tf->latestOcrTexts.end());
 						if (!missing_text && !needs_ocr_refresh) {
+							continue;
+						}
+
+						if (ocr_images.size() >= tf->ocrMaxRoisPerFrame) {
 							continue;
 						}
 
@@ -339,7 +403,15 @@ static void ocr_thread_proc(detect_filter *tf)
 
 		if (!ocr_images.empty() && tf->ocrRecognizer) {
 			try {
+				const auto ocr_start = std::chrono::steady_clock::now();
 				auto ocr_results = tf->ocrRecognizer->inferBatch(ocr_images);
+				const auto ocr_end = std::chrono::steady_clock::now();
+				const double ocr_ms =
+					std::chrono::duration<double, std::milli>(ocr_end - ocr_start).count();
+				{
+					std::lock_guard<std::mutex> perfLock(tf->perfStatsMutex);
+					update_running_avg(tf->perfOcrMsAvg, tf->perfOcrSamples, ocr_ms);
+				}
 				std::lock_guard<std::mutex> ocrResultsLock(tf->latestObjectsLock);
 				for (size_t idx = 0; idx < ocr_results.size() && idx < ocr_track_ids.size(); ++idx) {
 					uint64_t tid = ocr_track_ids[idx];
@@ -446,8 +518,15 @@ obs_properties_t *detect_filter_properties(void *data)
 
 	obs_properties_t *props = obs_properties_create();
 
-	// preview toggle for the render preview overlay at the top
-	obs_properties_add_bool(props, "preview", obs_module_text("Preview"));
+	// inference options group
+	obs_properties_t *inference_group = obs_properties_create();
+	obs_properties_add_group(props, "inference_group", obs_module_text("InferenceGroup"), OBS_GROUP_NORMAL,
+				inference_group);
+	obs_properties_add_float_slider(inference_group, "threshold", obs_module_text("Threshold"), 0.0,
+		1.0, 0.01);
+	obs_properties_add_int_slider(inference_group, "inference_interval_frames",
+		obs_module_text("InferenceIntervalFrames"), 1, 6, 1);
+	obs_properties_add_bool(inference_group, "async_inference", obs_module_text("AsyncInference"));
 
 
 	// options group for masking
@@ -469,15 +548,10 @@ obs_property_t *masking_type = obs_properties_add_list(
 				obs_module_text("MaskingColor"));
 	obs_properties_add_int_slider(masking_group, "masking_blur_radius",
 				obs_module_text("MaskingBlurRadius"), 0, 100, 1);
-	obs_properties_add_bool(masking_group, "async_inference",
-			      obs_module_text("AsyncInference"));
 	obs_properties_add_int_slider(masking_group, "dilation_iterations",
 				obs_module_text("DilationIterations"), 0, 50, 1);
 	obs_properties_add_int_slider(masking_group, "inpaint_radius",
 				obs_module_text("InpaintRadius"), 1, 200, 1);
-
-	// detection confidence threshold (inside masking group)
-	obs_properties_add_float_slider(masking_group, "threshold", obs_module_text("Threshold"), 0.0, 1.0, 0.01);
 
 	// add callback to show/hide masking options
 	obs_property_set_modified_callback(masking_group_prop, [](obs_properties_t *props_,
@@ -492,15 +566,12 @@ obs_property_t *masking_type = obs_properties_add_list(
 			obs_properties_get(props_, "inpaint_radius");
 		obs_property_t *masking_dilation =
 			obs_properties_get(props_, "dilation_iterations");
-		obs_property_t *async_inference =
-			obs_properties_get(props_, "async_inference");
 
 		obs_property_set_visible(masking_type, enabled);
 		obs_property_set_visible(masking_color, false);
 		obs_property_set_visible(masking_blur_radius, false);
 		obs_property_set_visible(masking_inpaint_radius, false);
 		obs_property_set_visible(masking_dilation, enabled);
-		obs_property_set_visible(async_inference, enabled);
 		return true;
 	});
 
@@ -516,14 +587,11 @@ obs_property_t *masking_type = obs_properties_add_list(
  			obs_properties_get(props_, "inpaint_radius");
  		obs_property_t *masking_dilation =
  			obs_properties_get(props_, "dilation_iterations");
- 		obs_property_t *async_inference =
- 			obs_properties_get(props_, "async_inference");
  		obs_property_set_visible(masking_color, false);
  		obs_property_set_visible(masking_blur_radius, false);
  		obs_property_set_visible(masking_inpaint_radius, false);
  		const bool masking_enabled = obs_data_get_bool(settings, "masking_group");
  		obs_property_set_visible(masking_dilation, masking_enabled);
- 		obs_property_set_visible(async_inference, masking_enabled);
  		if (masking_type_value == "solid_color") {
  			obs_property_set_visible(masking_color, masking_enabled);
  		} else if (masking_type_value == "blur" || masking_type_value == "pixelate") {
@@ -539,14 +607,14 @@ obs_property_t *masking_type = obs_properties_add_list(
  	obs_property_t *exclude_by_name_group_prop =
  		obs_properties_add_group(props, "exclude_by_name_group",
  				obs_module_text("ExcludeByNameGroup"), OBS_GROUP_CHECKABLE, exclude_by_name_group);
-	obs_property_t *ocr_refresh_interval = obs_properties_add_float_slider(
-		exclude_by_name_group, "ocr_refresh_interval",
-		obs_module_text("OCRRefreshInterval"), 1.0, 10.0, 0.5);
-	obs_property_set_visible(ocr_refresh_interval, false);
 	obs_property_t *ocr_expand_pixels = obs_properties_add_int_slider(
 		exclude_by_name_group, "ocr_expand_pixels",
 		obs_module_text("OCRExpandPixels"), 0, 5, 1);
 	obs_property_set_visible(ocr_expand_pixels, false);
+	obs_property_t *ocr_max_rois = obs_properties_add_int_slider(
+		exclude_by_name_group, "ocr_max_rois",
+		obs_module_text("OCRMaxRoisPerFrame"), 1, 32, 1);
+	obs_property_set_visible(ocr_max_rois, false);
 	obs_property_t *ocr_initial_threshold = obs_properties_add_int_slider(
 		exclude_by_name_group, "ocr_initial_threshold",
 		obs_module_text("OCRInitialThreshold"), 50, 100, 1);
@@ -557,8 +625,8 @@ obs_property_t *masking_type = obs_properties_add_list(
 			const bool enabled = obs_data_get_bool(settings, "exclude_by_name_group");
 			obs_data_set_bool(settings, "tracking_group", enabled);
 			obs_data_set_bool(settings, "ocr_enabled", enabled);
-			obs_property_set_visible(obs_properties_get(props_, "ocr_refresh_interval"), enabled);
 			obs_property_set_visible(obs_properties_get(props_, "ocr_expand_pixels"), enabled);
+			obs_property_set_visible(obs_properties_get(props_, "ocr_max_rois"), enabled);
 			obs_property_set_visible(obs_properties_get(props_, "ocr_initial_threshold"), enabled);
 			obs_property_set_visible(obs_properties_get(props_, "mask_exclude_text"), enabled);
 			return true;
@@ -619,7 +687,25 @@ obs_property_t *masking_type = obs_properties_add_list(
  	obs_properties_add_int_slider(exclude_group, "exclude_bottom",
  				      obs_module_text("ExcludeBottom"), 0, source_height, 1);
 
- 	// Add a informative text about the plugin
+	// Advanced settings group should remain at the bottom.
+	obs_properties_t *advanced_group = obs_properties_create();
+	obs_properties_add_group(props, "advanced_settings", obs_module_text("AdvancedSettingsGroup"), OBS_GROUP_NORMAL,
+				advanced_group);
+	obs_properties_add_bool(advanced_group, "preview", obs_module_text("Preview"));
+	obs_property_t *perf_log = obs_properties_add_bool(advanced_group, "perf_log", "Perf Log");
+	obs_property_t *perf_log_interval =
+		obs_properties_add_int_slider(advanced_group, "perf_log_interval",
+			"Perf Log Interval (frames)", 30, 600, 30);
+	obs_property_set_modified_callback(perf_log,
+		[](obs_properties_t *props_, obs_property_t *, obs_data_t *settings) {
+			const bool enabled = obs_data_get_bool(settings, "perf_log");
+			obs_property_t *interval = obs_properties_get(props_, "perf_log_interval");
+			obs_property_set_visible(interval, enabled);
+			return true;
+		});
+	obs_property_set_visible(perf_log_interval, false);
+
+	// Add a informative text about the plugin
  	std::string basic_info =
  		std::regex_replace(PLUGIN_INFO_TEMPLATE, std::regex("%1"), PLUGIN_VERSION);
  	obs_properties_add_text(props, "info", basic_info.c_str(), OBS_TEXT_INFO);
@@ -641,6 +727,8 @@ void detect_filter_defaults(obs_data_t *settings)
 #endif
 	obs_data_set_default_int(settings, "numThreads", 1);
 	obs_data_set_default_bool(settings, "preview", true);
+		obs_data_set_default_bool(settings, "perf_log", false);
+		obs_data_set_default_int(settings, "perf_log_interval", 120);
 	obs_data_set_default_double(settings, "threshold", 0.15);
 	obs_data_set_default_string(settings, "model_size", "yolodetector");
 	obs_data_set_default_int(settings, "object_category", -1);
@@ -655,8 +743,8 @@ void detect_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, "ocr_model_path", "");
 	obs_data_set_default_string(settings, "ocr_dict_path", "");
 	obs_data_set_default_string(settings, "mask_exclude_text", "");
-	obs_data_set_default_double(settings, "ocr_refresh_interval", 3.0);
 	obs_data_set_default_int(settings, "ocr_expand_pixels", 0);
+	obs_data_set_default_int(settings, "ocr_max_rois", 6);
 	obs_data_set_default_int(settings, "ocr_initial_threshold", 80);
 
  	// Exclude range defaults
@@ -672,6 +760,7 @@ void detect_filter_defaults(obs_data_t *settings)
 
  	// Asynchronous inference default
  	obs_data_set_default_bool(settings, "async_inference", true);
+	obs_data_set_default_int(settings, "inference_interval_frames", 1);
  }
 
 void detect_filter_update(void *data, obs_data_t *settings)
@@ -683,6 +772,11 @@ void detect_filter_update(void *data, obs_data_t *settings)
 	tf->isDisabled = true;
 
 	tf->preview = obs_data_get_bool(settings, "preview");
+	tf->perfLogEnabled = obs_data_get_bool(settings, "perf_log");
+	tf->perfLogInterval = (uint32_t)obs_data_get_int(settings, "perf_log_interval");
+	if (tf->perfLogInterval < 30) {
+		tf->perfLogInterval = 30;
+	}
 	tf->conf_threshold = (float)obs_data_get_double(settings, "threshold");
 	tf->objectCategory = (int)obs_data_get_int(settings, "object_category");
 	tf->maskingEnabled = obs_data_get_bool(settings, "masking_group");
@@ -709,8 +803,11 @@ void detect_filter_update(void *data, obs_data_t *settings)
 			obs_log(LOG_ERROR, "Failed to resolve OCR dictionary path via obs_module_file");
 		}
 	}
-	tf->ocrRefreshInterval = obs_data_get_double(settings, "ocr_refresh_interval");
 	tf->ocrExpandPixels = (int)obs_data_get_int(settings, "ocr_expand_pixels");
+	tf->ocrMaxRoisPerFrame = (uint32_t)obs_data_get_int(settings, "ocr_max_rois");
+	if (tf->ocrMaxRoisPerFrame < 1) {
+		tf->ocrMaxRoisPerFrame = 1;
+	}
 	tf->ocrInitialThreshold = (float)obs_data_get_int(settings, "ocr_initial_threshold") / 100.0f;
 	tf->ocrContinueThreshold = tf->ocrInitialThreshold - 0.1f;
 	if (!tf->ocrEnabled) {
@@ -731,16 +828,19 @@ void detect_filter_update(void *data, obs_data_t *settings)
  	tf->exclude_top = (int)obs_data_get_int(settings, "exclude_top");
  	tf->exclude_bottom = (int)obs_data_get_int(settings, "exclude_bottom");
 
- 	tf->minAreaThreshold = (int)obs_data_get_int(settings, "min_size_threshold");
-
  	// Inpaint parameters
  	tf->inpaintRadius = (float)obs_data_get_int(settings, "inpaint_radius");
 
  	// Asynchronous inference setting
  	tf->asyncInference = obs_data_get_bool(settings, "async_inference");
+	tf->inferenceIntervalFrames =
+		(uint32_t)obs_data_get_int(settings, "inference_interval_frames");
+	if (tf->inferenceIntervalFrames < 1) {
+		tf->inferenceIntervalFrames = 1;
+	}
 
 	const std::string newUseGpu = obs_data_get_string(settings, "useGPU");
-	const uint32_t newNumThreads = (uint32_t)obs_data_get_int(settings, "numThreads");
+	const uint32_t newNumThreads = recommend_num_threads(newUseGpu);
 	const std::string newModelSize = obs_data_get_string(settings, "model_size");
 
 	bool reinitialize = false;
@@ -787,7 +887,6 @@ void detect_filter_update(void *data, obs_data_t *settings)
 		// parameters
 		int onnxruntime_device_id_ = 0;
 		bool onnxruntime_use_parallel_ = true;
-		float nms_th_ = 0.45f;
 
 
 		// Load model
@@ -797,15 +896,17 @@ void detect_filter_update(void *data, obs_data_t *settings)
 				// Initialize YOLODetector for yolodetector model size
 				if (!tf->yolodetector) {
 					tf->yolodetector = std::make_unique<YOLODetector>();
-					// GPU 使用設定を適用（DirectML エクスプローラー初期化）
-					bool use_gpu = (tf->useGPU == "dml" || tf->useGPU == "cuda");
-					tf->yolodetector->setUseGPU(use_gpu);
-					
-					if (use_gpu) {
-						// DirectML 初期化を試行（Windows のみ）
-						if (!tf->yolodetector->initializeDirectML()) {
-							obs_log(LOG_WARNING, "Failed to initialize DirectML, falling back to CPU");
-						}
+				}
+
+				// GPU 使用設定とスレッド数設定を適用
+				bool use_gpu = (tf->useGPU == "dml" || tf->useGPU == "cuda");
+				tf->yolodetector->setUseGPU(use_gpu);
+				tf->yolodetector->setNumThreads(tf->numThreads);
+
+				if (use_gpu) {
+					// DirectML 初期化を試行（Windows のみ）
+					if (!tf->yolodetector->initializeDirectML()) {
+						obs_log(LOG_WARNING, "Failed to initialize DirectML, falling back to CPU");
 					}
 				}
 				if (!tf->yolodetector->loadModel(tf->modelFilepath.c_str())) {
@@ -819,6 +920,7 @@ void detect_filter_update(void *data, obs_data_t *settings)
 					tf->ocrRecognizer = std::make_unique<ocr::PaddleOCRRecognizer>();
 				}
 				tf->ocrRecognizer->setUseDirectML(tf->useGPU == "dml" || tf->useGPU == "cuda");
+				tf->ocrRecognizer->setNumThreads(tf->numThreads);
 				if (tf->ocrDictFilepath.empty()) {
 					obs_log(LOG_ERROR, "OCR dictionary path is empty");
 					throw std::runtime_error("Failed to load OCR dictionary");
@@ -853,6 +955,8 @@ void detect_filter_update(void *data, obs_data_t *settings)
 		// name of the source that the filter is attached to
 		obs_log(LOG_INFO, "  Source: %s", obs_source_get_name(tf->source));
 		obs_log(LOG_INFO, "  Inference Device: %s", tf->useGPU.c_str());
+		obs_log(LOG_INFO, "  Hardware Threads: %u", std::thread::hardware_concurrency());
+		obs_log(LOG_INFO, "  Num Threads Mode: auto");
 		obs_log(LOG_INFO, "  Num Threads: %d", tf->numThreads);
 		obs_log(LOG_INFO, "  Model Size: %s", tf->modelSize.c_str());
 		obs_log(LOG_INFO, "  Preview: %s", tf->preview ? "true" : "false");
@@ -976,6 +1080,20 @@ void detect_filter_destroy(void *data)
 		if (tf->stagesurface) {
 			gs_stagesurface_destroy(tf->stagesurface);
 		}
+		if (tf->previewUploadTexture) {
+			gs_texture_destroy(tf->previewUploadTexture);
+			tf->previewUploadTexture = nullptr;
+		}
+		if (tf->maskUploadTexture) {
+			gs_texture_destroy(tf->maskUploadTexture);
+			tf->maskUploadTexture = nullptr;
+		}
+		if (tf->effectWorkTexture) {
+			gs_texture_destroy(tf->effectWorkTexture);
+			tf->effectWorkTexture = nullptr;
+			tf->effectWorkTextureWidth = 0;
+			tf->effectWorkTextureHeight = 0;
+		}
  		gs_effect_destroy(tf->kawaseBlurEffect);
  		gs_effect_destroy(tf->maskingEffect);
  		gs_effect_destroy(tf->pixelateEffect);
@@ -989,6 +1107,7 @@ void detect_filter_destroy(void *data)
 void detect_filter_video_tick(void *data, float seconds)
 {
 	UNUSED_PARAMETER(seconds);
+	const auto tick_start = std::chrono::steady_clock::now();
 
 	struct detect_filter *tf = reinterpret_cast<detect_filter *>(data);
 
@@ -1002,6 +1121,7 @@ void detect_filter_video_tick(void *data, float seconds)
 	}
 
 	cv::Mat imageBGRA;
+	const auto input_copy_start = std::chrono::steady_clock::now();
 	{
 		std::unique_lock<std::mutex> lock(tf->inputBGRALock, std::try_to_lock);
 		if (!lock.owns_lock()) {
@@ -1014,20 +1134,40 @@ void detect_filter_video_tick(void *data, float seconds)
 		}
 		imageBGRA = tf->inputBGRA.clone();
 	}
+	const auto input_copy_end = std::chrono::steady_clock::now();
 
 	cv::Mat inferenceFrame;
+	const auto color_convert_start = std::chrono::steady_clock::now();
 	cv::cvtColor(imageBGRA, inferenceFrame, cv::COLOR_BGRA2BGR);
+	const auto color_convert_end = std::chrono::steady_clock::now();
 
+	bool shouldQueueInference = true;
+	bool dueByInterval = true;
 	{
 		std::lock_guard<std::mutex> lock(tf->inferenceMutex);
-		tf->pendingInferenceFrame = inferenceFrame;
-		tf->pendingInferenceFrameReady = true;
-		tf->inferenceCompleted = false;
+		tf->inferenceIntervalCounter++;
+		if (tf->inferenceIntervalCounter < tf->inferenceIntervalFrames) {
+			dueByInterval = false;
+		} else {
+			tf->inferenceIntervalCounter = 0;
+		}
+
+		if (!dueByInterval) {
+			shouldQueueInference = false;
+		} else if (tf->asyncInference && tf->pendingInferenceFrameReady) {
+			shouldQueueInference = false;
+		} else {
+			tf->pendingInferenceFrame = inferenceFrame;
+			tf->pendingInferenceFrameReady = true;
+			tf->inferenceCompleted = false;
+		}
 	}
-	tf->inferenceCv.notify_one();
+	if (shouldQueueInference) {
+		tf->inferenceCv.notify_one();
+	}
 
 	// If synchronous mode, wait for inference to complete
-	if (!tf->asyncInference) {
+	if (!tf->asyncInference && shouldQueueInference) {
 		std::unique_lock<std::mutex> lock(tf->inferenceMutex);
 		tf->inferenceCv.wait(lock, [tf] {
 			return tf->inferenceCompleted || tf->stopInferenceThread;
@@ -1068,16 +1208,6 @@ void detect_filter_video_tick(void *data, float seconds)
 		}
 	}
 
-	if (tf->minAreaThreshold > 0) {
-		std::vector<Object> filtered_objects;
-		for (const Object &obj : objects) {
-			if (obj.rect.area() > (float)tf->minAreaThreshold) {
-				filtered_objects.push_back(obj);
-			}
-		}
-		objects = filtered_objects;
-	}
-
 	if (tf->objectCategory != -1) {
 		std::vector<Object> filtered_objects;
 		for (const Object &obj : objects) {
@@ -1088,9 +1218,9 @@ void detect_filter_video_tick(void *data, float seconds)
 		objects = filtered_objects;
 	}
 
-	if (tf->preview || tf->maskingEnabled) {
-		cv::Mat frame;
-		cv::cvtColor(imageBGRA, frame, cv::COLOR_BGRA2BGR);
+	if (tf->preview || tf->maskingEnabled || (tf->exclude_group_enabled && tf->exclude_preview)) {
+		cv::Mat frame = inferenceFrame.clone();
+		cv::Mat nextMask;
 
 		if (tf->preview && objects.size() > 0) {
 			draw_objects(frame, objects, classNames);
@@ -1121,7 +1251,7 @@ void detect_filter_video_tick(void *data, float seconds)
 			}
 		}
 
-		if (tf->preview && tf->exclude_group_enabled && tf->exclude_preview) {
+		if (tf->exclude_group_enabled && tf->exclude_preview) {
 			cv::Rect excludeRect(
 				tf->exclude_left,
 				tf->exclude_top,
@@ -1129,8 +1259,9 @@ void detect_filter_video_tick(void *data, float seconds)
 				frame.rows - tf->exclude_top - tf->exclude_bottom);
 			draw_exclude_preview(frame, excludeRect);
 		}
+		const auto mask_build_start = std::chrono::steady_clock::now();
 		if (tf->maskingEnabled) {
-			cv::Mat mask = cv::Mat::zeros(frame.size(), CV_8UC1);
+			nextMask = cv::Mat::zeros(frame.size(), CV_8UC1);
 			for (const Object &obj : objects) {
 				// Check if this detection should be excluded from masking
 				if (tf->exclude_group_enabled && is_rect_excluded(obj.rect, tf->exclude_left,
@@ -1162,21 +1293,76 @@ void detect_filter_video_tick(void *data, float seconds)
 						}
 					}
 				}
-				cv::rectangle(mask, obj.rect, cv::Scalar(255), -1);
+				cv::rectangle(nextMask, obj.rect, cv::Scalar(255), -1);
 			}
-			std::lock_guard<std::mutex> lock(tf->outputLock);
-			mask.copyTo(tf->outputMask);
-
 			if (tf->maskingDilateIterations > 0) {
 				cv::Mat dilatedMask;
-				cv::dilate(tf->outputMask, dilatedMask, cv::Mat(),
+				cv::dilate(nextMask, dilatedMask, cv::Mat(),
 					   cv::Point(-1, -1), tf->maskingDilateIterations);
-				dilatedMask.copyTo(tf->outputMask);
+				nextMask = std::move(dilatedMask);
 			}
 		}
+		const auto mask_build_end = std::chrono::steady_clock::now();
 
-		std::lock_guard<std::mutex> lock(tf->outputLock);
-		cv::cvtColor(frame, tf->outputPreviewBGRA, cv::COLOR_BGR2BGRA);
+		cv::Mat nextPreviewBGRA;
+		cv::cvtColor(frame, nextPreviewBGRA, cv::COLOR_BGR2BGRA);
+
+		const auto publish_start = std::chrono::steady_clock::now();
+		{
+			std::lock_guard<std::mutex> lock(tf->outputLock);
+			tf->outputPreviewBGRA = std::move(nextPreviewBGRA);
+			if (tf->maskingEnabled) {
+				tf->outputMask = std::move(nextMask);
+			}
+		}
+		const auto publish_end = std::chrono::steady_clock::now();
+
+		std::lock_guard<std::mutex> perfLock(tf->perfStatsMutex);
+		update_running_avg(
+			tf->perfMaskBuildMsAvg,
+			tf->perfMaskBuildSamples,
+			std::chrono::duration<double, std::milli>(mask_build_end - mask_build_start).count());
+		update_running_avg(
+			tf->perfPublishMsAvg,
+			tf->perfPublishSamples,
+			std::chrono::duration<double, std::milli>(publish_end - publish_start).count());
+	}
+
+	const auto tick_end = std::chrono::steady_clock::now();
+	const double tick_ms = std::chrono::duration<double, std::milli>(tick_end - tick_start).count();
+	{
+		std::lock_guard<std::mutex> perfLock(tf->perfStatsMutex);
+		update_running_avg(
+			tf->perfInputCopyMsAvg,
+			tf->perfInputCopySamples,
+			std::chrono::duration<double, std::milli>(input_copy_end - input_copy_start).count());
+		update_running_avg(
+			tf->perfColorConvertMsAvg,
+			tf->perfColorConvertSamples,
+			std::chrono::duration<double, std::milli>(color_convert_end - color_convert_start)
+				.count());
+		update_running_avg(tf->perfTickMsAvg, tf->perfTickSamples, tick_ms);
+		if (tf->perfLogEnabled) {
+			tf->perfLogCounter++;
+			if (tf->perfLogCounter >= tf->perfLogInterval) {
+				tf->perfLogCounter = 0;
+				const double obs_fps = obs_get_active_fps();
+				obs_log(LOG_INFO,
+					"[Perf] fps=%.2f tick=%.2f yolo=%.2f ocr=%.2f in=%.2f cvt=%.2f mask=%.2f pub=%.2f cap=%.2f snap=%.2f up=%.2f fx=%.2f",
+					obs_fps,
+					tf->perfTickMsAvg,
+					tf->perfYoloMsAvg,
+					tf->perfOcrMsAvg,
+					tf->perfInputCopyMsAvg,
+					tf->perfColorConvertMsAvg,
+					tf->perfMaskBuildMsAvg,
+					tf->perfPublishMsAvg,
+					tf->perfRenderCaptureMsAvg,
+					tf->perfRenderSnapshotMsAvg,
+					tf->perfRenderUploadMsAvg,
+					tf->perfRenderEffectMsAvg);
+			}
+		}
 	}
 
 }
@@ -1195,16 +1381,27 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 	}
 
 	uint32_t width, height;
+	const auto render_capture_start = std::chrono::steady_clock::now();
 	if (!getRGBAFromStageSurface(tf, width, height)) {
 		if (tf->source) {
 			obs_source_skip_video_filter(tf->source);
 		}
 		return;
 	}
+	const auto render_capture_end = std::chrono::steady_clock::now();
+	{
+		std::lock_guard<std::mutex> perfLock(tf->perfStatsMutex);
+		update_running_avg(
+			tf->perfRenderCaptureMsAvg,
+			tf->perfRenderCaptureSamples,
+			std::chrono::duration<double, std::milli>(render_capture_end - render_capture_start)
+				.count());
+	}
 
 	// if preview is enabled, render the image
-	if (tf->preview || tf->maskingEnabled) {
+	if (tf->preview || tf->maskingEnabled || (tf->exclude_group_enabled && tf->exclude_preview)) {
 		cv::Mat outputBGRA, outputMask;
+		const auto render_snapshot_start = std::chrono::steady_clock::now();
 		{
 			// lock the outputLock mutex
 			std::lock_guard<std::mutex> lock(tf->outputLock);
@@ -1222,12 +1419,47 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 				}
 				return;
 			}
-			outputBGRA = tf->outputPreviewBGRA.clone();
-			outputMask = tf->outputMask.clone();
+			outputBGRA = tf->outputPreviewBGRA;
+			outputMask = tf->outputMask;
+		}
+		const auto render_snapshot_end = std::chrono::steady_clock::now();
+		{
+			std::lock_guard<std::mutex> perfLock(tf->perfStatsMutex);
+			update_running_avg(
+				tf->perfRenderSnapshotMsAvg,
+				tf->perfRenderSnapshotSamples,
+				std::chrono::duration<double, std::milli>(
+					render_snapshot_end - render_snapshot_start)
+					.count());
 		}
 
-		gs_texture_t *tex = gs_texture_create(width, height, GS_BGRA, 1,
-						      (const uint8_t **)&outputBGRA.data, 0);
+		const auto render_upload_start = std::chrono::steady_clock::now();
+		if (tf->uploadTextureWidth != width || tf->uploadTextureHeight != height) {
+			if (tf->previewUploadTexture) {
+				gs_texture_destroy(tf->previewUploadTexture);
+				tf->previewUploadTexture = nullptr;
+			}
+			if (tf->maskUploadTexture) {
+				gs_texture_destroy(tf->maskUploadTexture);
+				tf->maskUploadTexture = nullptr;
+			}
+			tf->uploadTextureWidth = width;
+			tf->uploadTextureHeight = height;
+		}
+
+		if (!tf->previewUploadTexture) {
+			tf->previewUploadTexture =
+				gs_texture_create(width, height, GS_BGRA, 1, nullptr, GS_DYNAMIC);
+			if (!tf->previewUploadTexture) {
+				obs_source_skip_video_filter(tf->source);
+				return;
+			}
+		}
+
+		gs_texture_set_image(tf->previewUploadTexture, outputBGRA.data,
+					   (uint32_t)outputBGRA.step, false);
+
+		gs_texture_t *tex = tf->previewUploadTexture;
 		gs_texture_t *maskTexture = nullptr;
 		std::string technique_name = "Draw";
 		gs_eparam_t *imageParam = gs_effect_get_param_by_name(tf->maskingEffect, "image");
@@ -1237,18 +1469,40 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
 			gs_effect_get_param_by_name(tf->maskingEffect, "color");
 
 		if (tf->maskingEnabled) {
-			maskTexture = gs_texture_create(width, height, GS_R8, 1,
-							(const uint8_t **)&outputMask.data, 0);
+			if (outputMask.empty() || (uint32_t)outputMask.cols != width ||
+			    (uint32_t)outputMask.rows != height) {
+				obs_source_skip_video_filter(tf->source);
+				return;
+			}
+
+			if (!tf->maskUploadTexture) {
+				tf->maskUploadTexture =
+					gs_texture_create(width, height, GS_R8, 1, nullptr, GS_DYNAMIC);
+				if (!tf->maskUploadTexture) {
+					obs_source_skip_video_filter(tf->source);
+					return;
+				}
+			}
+
+			gs_texture_set_image(tf->maskUploadTexture, outputMask.data,
+					   (uint32_t)outputMask.step, false);
+			maskTexture = tf->maskUploadTexture;
 			gs_effect_set_texture(maskParam, maskTexture);
 			if (tf->maskingType == "output_mask") {
 				technique_name = "DrawMask";
 			} else if (tf->maskingType == "blur") {
-				gs_texture_destroy(tex);
 				tex = blur_image(tf, width, height, maskTexture);
+				if (!tex) {
+					obs_source_skip_video_filter(tf->source);
+					return;
+				}
 			} else if (tf->maskingType == "pixelate") {
-				gs_texture_destroy(tex);
 				tex = pixelate_image(tf, width, height, maskTexture,
-						     (float)tf->maskingBlurRadius);
+						   (float)tf->maskingBlurRadius);
+				if (!tex) {
+					obs_source_skip_video_filter(tf->source);
+					return;
+				}
 			} else if (tf->maskingType == "transparent") {
 				technique_name = "DrawSolidColor";
 				gs_effect_set_color(maskColorParam, 0);
@@ -1269,23 +1523,56 @@ void detect_filter_video_render(void *data, gs_effect_t *_effect)
  					gs_effect_set_float(iTexSizeParam, (float)width);
  				}
 
+				const auto inpaint_effect_start = std::chrono::steady_clock::now();
+
 				while (gs_effect_loop(inpaintEffect, "Draw")) {
 					gs_draw_sprite(tex, 0, 0, 0);
 				}
-				gs_texture_destroy(tex);
-				gs_texture_destroy(maskTexture);
+				const auto inpaint_effect_end = std::chrono::steady_clock::now();
+				{
+					std::lock_guard<std::mutex> perfLock(tf->perfStatsMutex);
+					update_running_avg(
+						tf->perfRenderUploadMsAvg,
+						tf->perfRenderUploadSamples,
+						std::chrono::duration<double, std::milli>(
+							inpaint_effect_start - render_upload_start)
+							.count());
+					update_running_avg(
+						tf->perfRenderEffectMsAvg,
+						tf->perfRenderEffectSamples,
+						std::chrono::duration<double, std::milli>(
+							inpaint_effect_end - inpaint_effect_start)
+							.count());
+				}
 				return;
 			}
 		}
+		const auto render_upload_end = std::chrono::steady_clock::now();
+		{
+			std::lock_guard<std::mutex> perfLock(tf->perfStatsMutex);
+			update_running_avg(
+				tf->perfRenderUploadMsAvg,
+				tf->perfRenderUploadSamples,
+				std::chrono::duration<double, std::milli>(render_upload_end - render_upload_start)
+					.count());
+		}
 
+		const auto render_effect_start = std::chrono::steady_clock::now();
 		gs_effect_set_texture(imageParam, tex);
 
 		while (gs_effect_loop(tf->maskingEffect, technique_name.c_str())) {
 			gs_draw_sprite(tex, 0, 0, 0);
 		}
+		const auto render_effect_end = std::chrono::steady_clock::now();
+		{
+			std::lock_guard<std::mutex> perfLock(tf->perfStatsMutex);
+			update_running_avg(
+				tf->perfRenderEffectMsAvg,
+				tf->perfRenderEffectSamples,
+				std::chrono::duration<double, std::milli>(render_effect_end - render_effect_start)
+					.count());
+		}
 
-		gs_texture_destroy(tex);
-		gs_texture_destroy(maskTexture);
 	} else {
 		obs_source_skip_video_filter(tf->source);
 	}

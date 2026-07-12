@@ -9,6 +9,7 @@
 #include <obs-module.h>
 #include <onnxruntime_cxx_api.h>
 #include <opencv2/opencv.hpp>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -81,6 +82,12 @@ public:
      * @param useGPU GPU を使用する場合 true
      */
     void setUseGPU(bool useGPU);
+
+    /**
+     * @brief ONNX Runtime のスレッド数設定
+     * @param numThreads IntraOp スレッド数（1以上）
+     */
+    void setNumThreads(uint32_t numThreads);
 
     /**
      * @brief DirectML の初期化（Windows のみ）

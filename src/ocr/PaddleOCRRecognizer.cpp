@@ -1,6 +1,7 @@
 #include "ocr/PaddleOCRRecognizer.h"
 
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
@@ -34,6 +35,13 @@ void PaddleOCRRecognizer::setUseDirectML(bool useDirectML)
     use_directml_ = useDirectML;
 }
 
+void PaddleOCRRecognizer::setNumThreads(uint32_t numThreads)
+{
+    num_threads_ = std::max<uint32_t>(1, numThreads);
+    session_options_.SetIntraOpNumThreads(static_cast<int>(num_threads_));
+    session_options_dml_.SetIntraOpNumThreads(static_cast<int>(num_threads_));
+}
+
 bool PaddleOCRRecognizer::loadDictionary(const std::string &dict_file)
 {
     character_list_.clear();
@@ -65,7 +73,7 @@ bool PaddleOCRRecognizer::initializeDirectML()
         session_options_dml_ = Ort::SessionOptions();
         session_options_dml_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         session_options_dml_.SetLogSeverityLevel(3);
-        session_options_dml_.SetIntraOpNumThreads(1);
+        session_options_dml_.SetIntraOpNumThreads(static_cast<int>(num_threads_));
 
         const auto &api = Ort::GetApi();
         OrtDmlApi *dmlApi = nullptr;
@@ -170,7 +178,10 @@ bool PaddleOCRRecognizer::isReady() const
     return is_ready_ && session_ != nullptr;
 }
 
-std::vector<float> PaddleOCRRecognizer::preprocessImage(const cv::Mat &image, int targetHeight, int maxWidth) const
+void PaddleOCRRecognizer::preprocessImageToBuffer(const cv::Mat &image,
+                                                  int targetHeight,
+                                                  int maxWidth,
+                                                  float *outBuffer) const
 {
     cv::Mat roi = image;
     const float ratio = static_cast<float>(roi.cols) / static_cast<float>(roi.rows);
@@ -190,14 +201,13 @@ std::vector<float> PaddleOCRRecognizer::preprocessImage(const cv::Mat &image, in
 
     cv::Mat blob = cv::dnn::blobFromImage(padded, 1.0f, cv::Size(maxWidth, targetHeight), cv::Scalar(0, 0, 0), false, false, CV_32F);
 
-    std::vector<float> result;
+    const size_t blobSize = blob.total();
     if (blob.isContinuous()) {
-        result.assign(blob.ptr<float>(), blob.ptr<float>() + blob.total());
+        std::memcpy(outBuffer, blob.ptr<float>(), blobSize * sizeof(float));
     } else {
-        result.assign(blob.begin<float>(), blob.end<float>());
+        cv::Mat contiguous = blob.clone();
+        std::memcpy(outBuffer, contiguous.ptr<float>(), blobSize * sizeof(float));
     }
-
-    return result;
 }
 
 OCRResult PaddleOCRRecognizer::decodeSequence(const float *data, int64_t seqLength, int64_t vocabSize) const
@@ -252,17 +262,14 @@ std::vector<OCRResult> PaddleOCRRecognizer::inferBatch(const std::vector<cv::Mat
     const int channels = 3;
     const int batchSize = static_cast<int>(images.size());
 
-    std::vector<std::vector<float>> preprocessed;
-    preprocessed.reserve(batchSize);
-    for (const auto &image : images) {
-        preprocessed.push_back(preprocessImage(image, targetHeight, maxWidth));
-    }
-
     const size_t tensorSize = static_cast<size_t>(batchSize) * channels * targetHeight * maxWidth;
-    std::vector<float> inputTensor;
-    inputTensor.reserve(tensorSize);
-    for (const auto &buffer : preprocessed) {
-        inputTensor.insert(inputTensor.end(), buffer.begin(), buffer.end());
+    std::vector<float> inputTensor(tensorSize);
+    const size_t imageTensorSize = static_cast<size_t>(channels) * targetHeight * maxWidth;
+    for (int i = 0; i < batchSize; ++i) {
+        preprocessImageToBuffer(images[static_cast<size_t>(i)],
+                                targetHeight,
+                                maxWidth,
+                                inputTensor.data() + static_cast<size_t>(i) * imageTensorSize);
     }
 
     std::vector<int64_t> input_shape = {batchSize, channels, targetHeight, maxWidth};

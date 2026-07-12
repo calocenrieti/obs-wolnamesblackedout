@@ -10,6 +10,7 @@
 #include "ocr/PaddleOCRRecognizer.h"
 
 #include <chrono>
+#include <cstdint>
 #include <unordered_map>
 
 /**
@@ -23,8 +24,6 @@ struct filter_data {
 	uint32_t numThreads;
 	float conf_threshold;
 	std::string modelSize;
-
-	int minAreaThreshold;
 	int objectCategory;
 	bool maskingEnabled;
 	std::string maskingType;
@@ -59,6 +58,13 @@ struct filter_data {
 	gs_effect_t *maskingEffect;
 	gs_effect_t *pixelateEffect;
 	gs_effect_t *inpaintEffect;
+	gs_texture_t *previewUploadTexture = nullptr;
+	gs_texture_t *maskUploadTexture = nullptr;
+	gs_texture_t *effectWorkTexture = nullptr;
+	uint32_t uploadTextureWidth = 0;
+	uint32_t uploadTextureHeight = 0;
+	uint32_t effectWorkTextureWidth = 0;
+	uint32_t effectWorkTextureHeight = 0;
 
 	cv::Mat inputBGRA;
 	cv::Mat outputPreviewBGRA;
@@ -100,15 +106,45 @@ struct filter_data {
 	std::string ocrModelFilepath;
 	std::string ocrDictFilepath;
 	bool ocrEnabled = false;
-	double ocrRefreshInterval = 3.0;
 	int ocrExpandPixels = 0;
+	uint32_t ocrMaxRoisPerFrame = 6;
 	double ocrInitialThreshold = 0.8;
 	double ocrContinueThreshold = 0.7;
 	std::chrono::steady_clock::time_point lastOcrRefreshTime = std::chrono::steady_clock::now();
 
 	// Asynchronous inference toggle
 	bool asyncInference = true;
+	uint32_t inferenceIntervalFrames = 1;
+	uint32_t inferenceIntervalCounter = 0;
 	bool inferenceCompleted = false;
+
+	// Lightweight performance logging (moving averages)
+	bool perfLogEnabled = false;
+	uint32_t perfLogInterval = 120;
+	double perfTickMsAvg = 0.0;
+	double perfYoloMsAvg = 0.0;
+	double perfOcrMsAvg = 0.0;
+	double perfInputCopyMsAvg = 0.0;
+	double perfColorConvertMsAvg = 0.0;
+	double perfMaskBuildMsAvg = 0.0;
+	double perfPublishMsAvg = 0.0;
+	double perfRenderCaptureMsAvg = 0.0;
+	double perfRenderSnapshotMsAvg = 0.0;
+	double perfRenderUploadMsAvg = 0.0;
+	double perfRenderEffectMsAvg = 0.0;
+	uint64_t perfTickSamples = 0;
+	uint64_t perfYoloSamples = 0;
+	uint64_t perfOcrSamples = 0;
+	uint64_t perfInputCopySamples = 0;
+	uint64_t perfColorConvertSamples = 0;
+	uint64_t perfMaskBuildSamples = 0;
+	uint64_t perfPublishSamples = 0;
+	uint64_t perfRenderCaptureSamples = 0;
+	uint64_t perfRenderSnapshotSamples = 0;
+	uint64_t perfRenderUploadSamples = 0;
+	uint64_t perfRenderEffectSamples = 0;
+	uint32_t perfLogCounter = 0;
+	std::mutex perfStatsMutex;
 
 #if _WIN32
 	std::wstring modelFilepath;
