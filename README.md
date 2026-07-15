@@ -17,6 +17,7 @@ BytetrackとPaddleOCRを利用して名前指定でマスク処理の対象外�
 - EdgeYOLO、顔検出、トラッキングなど削除
 - マスク対象外エリアを設定可能とし、簡易的ですが配信者のキャラクターをマスク対象外にできるようにしました。
 - ByteTrack、PaddleOcrで名前でマスク対象外ができるようになりました。
+- OBS-DX11-DX12-DirectMLと連携しGPU内で完結することで当方環境で60FPSを実現しました。
 
 [![Watch the video](https://img.youtube.com/vi/-JE25IVAbdI/hqdefault.jpg)](https://www.youtube.com/watch?v=-JE25IVAbdI)<br>
 

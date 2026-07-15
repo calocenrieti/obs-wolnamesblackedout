@@ -3,6 +3,10 @@
 
 #include <obs-module.h>
 
+#ifdef _WIN32
+#include <d3d11.h>
+#endif
+
 #include "yolodetector/YOLODetector.h"
 #include "ByteTrack/Detection.h"
 #include "ByteTrack/Track.h"
@@ -12,6 +16,51 @@
 #include <chrono>
 #include <cstdint>
 #include <unordered_map>
+
+struct PendingInferenceFrame {
+	cv::Mat frameBGRA;
+	cv::Mat frameBGR;
+	HANDLE gpuSharedHandle = nullptr;
+	uint32_t gpuWidth = 0;
+	uint32_t gpuHeight = 0;
+
+	bool empty() const
+	{
+		return frameBGRA.empty() && frameBGR.empty() && gpuSharedHandle == nullptr;
+	}
+
+	void clear()
+	{
+		frameBGRA.release();
+		frameBGR.release();
+		if (gpuSharedHandle) {
+			CloseHandle(gpuSharedHandle);
+			gpuSharedHandle = nullptr;
+		}
+		gpuWidth = 0;
+		gpuHeight = 0;
+	}
+
+	bool hasBGRA() const
+	{
+		return !frameBGRA.empty();
+	}
+
+	bool hasBGR() const
+	{
+		return !frameBGR.empty();
+	}
+
+	bool hasGpuSharedHandle() const
+	{
+		return gpuSharedHandle != nullptr;
+	}
+
+	const cv::Mat &getBGR() const
+	{
+		return hasBGR() ? frameBGR : frameBGRA;
+	}
+};
 
 /**
   * @brief The filter_data struct
@@ -61,6 +110,12 @@ struct filter_data {
 	gs_texture_t *previewUploadTexture = nullptr;
 	gs_texture_t *maskUploadTexture = nullptr;
 	gs_texture_t *effectWorkTexture = nullptr;
+#ifdef _WIN32
+	ID3D11Texture2D *gpuInputTexture = nullptr;
+	HANDLE gpuInputSharedHandle = nullptr;
+#endif
+	uint32_t gpuInputTextureWidth = 0;
+	uint32_t gpuInputTextureHeight = 0;
 	uint32_t uploadTextureWidth = 0;
 	uint32_t uploadTextureHeight = 0;
 	uint32_t effectWorkTextureWidth = 0;
@@ -74,12 +129,13 @@ struct filter_data {
 	bool preview;
 
 	std::mutex inputBGRALock;
+	std::mutex gpuFrameLock;
 	std::mutex outputLock;
 	std::mutex modelMutex;
 
 	std::mutex inferenceMutex;
 	std::condition_variable inferenceCv;
-	cv::Mat pendingInferenceFrame;
+	PendingInferenceFrame pendingInferenceFrame;
 	bool pendingInferenceFrameReady = false;
 	bool stopInferenceThread = false;
 	std::thread inferenceThread;
@@ -88,7 +144,11 @@ struct filter_data {
 	std::condition_variable ocrCv;
 	bool pendingOcrWork = false;
 	bool stopOcrThread = false;
-	std::vector<cv::Mat> pendingOcrImages;
+	cv::Mat pendingOcrFrameBGRA;
+	HANDLE pendingOcrGpuSharedHandle = nullptr;
+	uint32_t pendingOcrGpuWidth = 0;
+	uint32_t pendingOcrGpuHeight = 0;
+	std::vector<cv::Rect> pendingOcrRects;
 	std::vector<uint64_t> pendingOcrTrackIds;
 	std::thread ocrThread;
 
@@ -117,6 +177,10 @@ struct filter_data {
 	uint32_t inferenceIntervalFrames = 1;
 	uint32_t inferenceIntervalCounter = 0;
 	bool inferenceCompleted = false;
+	bool gpuZeroCopyEnabled = false;
+	HANDLE latestGpuSharedHandle = nullptr;
+	uint32_t latestGpuWidth = 0;
+	uint32_t latestGpuHeight = 0;
 
 	// Lightweight performance logging (moving averages)
 	bool perfLogEnabled = false;
@@ -132,9 +196,13 @@ struct filter_data {
 	double perfRenderSnapshotMsAvg = 0.0;
 	double perfRenderUploadMsAvg = 0.0;
 	double perfRenderEffectMsAvg = 0.0;
+	double perfOcrRoiCountAvg = 0.0;
+	uint64_t perfRenderTextureCaptureCount = 0;
+	uint64_t perfStageSurfaceFallbackCount = 0;
 	uint64_t perfTickSamples = 0;
 	uint64_t perfYoloSamples = 0;
 	uint64_t perfOcrSamples = 0;
+	uint64_t perfOcrRoiSamples = 0;
 	uint64_t perfInputCopySamples = 0;
 	uint64_t perfColorConvertSamples = 0;
 	uint64_t perfMaskBuildSamples = 0;

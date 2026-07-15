@@ -99,6 +99,7 @@ target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
 # Ensure MSVC uses C++20 std flag
 if(MSVC)
   target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE /std:c++20)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE d3d11 d3d12 d3dcompiler dxgi)
 endif()
 
 

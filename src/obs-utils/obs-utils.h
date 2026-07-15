@@ -3,6 +3,7 @@
 
 #include "FilterData.h"
 
+bool getRGBAFromRenderTexture(filter_data *tf, uint32_t &width, uint32_t &height, bool readbackToCpu = true);
 bool getRGBAFromStageSurface(filter_data *tf, uint32_t &width, uint32_t &height);
 
 gs_texture_t *blur_image(struct filter_data *tf, uint32_t width, uint32_t height,

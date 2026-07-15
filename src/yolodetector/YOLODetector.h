@@ -6,6 +6,10 @@
 #include <dml_provider_factory.h>
 #endif // _WIN32
 
+#ifdef _WIN32
+struct ID3D11Texture2D;
+#endif
+
 #include <obs-module.h>
 #include <onnxruntime_cxx_api.h>
 #include <opencv2/opencv.hpp>
@@ -68,6 +72,21 @@ public:
      * @return 検出された境界ボックスのリスト。空の場合は std::nullopt
      */
     std::optional<std::vector<BoundingBox>> __stdcall inference(const cv::Mat& image, float conf_threshold = 0.15f);
+
+    /**
+     * @brief BGRA 入力から推論実行
+     * @param image 入力画像（BGRA）
+     * @param conf_threshold 信頼度スコアの閾値（デフォルト: 0.15）
+     * @return 検出された境界ボックスのリスト。空の場合は std::nullopt
+     */
+    std::optional<std::vector<BoundingBox>> __stdcall inferenceBGRA(const cv::Mat& image, float conf_threshold = 0.15f);
+
+#ifdef _WIN32
+    std::optional<std::vector<BoundingBox>> __stdcall inferenceFromSharedHandle(HANDLE sharedHandle,
+                                             uint32_t width,
+                                             uint32_t height,
+                                             float conf_threshold = 0.15f);
+#endif
     
     /**
      * @brief 推論結果を Object 構造体に変換
@@ -82,6 +101,11 @@ public:
      * @param useGPU GPU を使用する場合 true
      */
     void setUseGPU(bool useGPU);
+
+    /**
+     * @brief GPU zero-copy input path の有効/無効
+     */
+    void setGpuZeroCopyEnabled(bool enabled);
 
     /**
      * @brief ONNX Runtime のスレッド数設定
@@ -99,9 +123,16 @@ private:
     struct Private;
     std::unique_ptr<Private> m_;
     std::mutex mutex_;
-    
+
+    std::optional<std::vector<BoundingBox>> inferenceImpl(const cv::Mat& image, int expected_channels, float conf_threshold);
+    bool initializeGpuPipeline(int width, int height);
+    std::optional<Ort::Value> runGpuPreprocessToOrtValue(const cv::Mat& image);
+    std::optional<Ort::Value> runGpuPreprocessFromSourceResource(void* sourceResource, int width, int height);
+    void releaseGpuResources();
+
 public:
     float resizeScales;  // リサイズスケール（座標変換用）
+
 };
 
 #endif // _YOLO_DETECTOR_H
