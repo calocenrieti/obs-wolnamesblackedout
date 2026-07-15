@@ -53,6 +53,10 @@ This plugin is based on the open-source project
 [obs-detect](https://github.com/royshil/obs-detect) (GPL v2).
 Copyright (c) Roy Shilkrot.
 
+This plugin also references implementation ideas from
+[winter1l/obs-detect](https://github.com/winter1l/obs-detect) (GPL v2),
+specifically for GPU zero-copy processing. No direct source code was used.
+
 The distribution includes third-party libraries under their respective licenses.
 See the LICENSES folder for details.
 
