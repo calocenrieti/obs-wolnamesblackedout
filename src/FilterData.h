@@ -13,6 +13,7 @@
 #include "ByteTrack/BYTETracker.h"
 #include "ocr/PaddleOCRRecognizer.h"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <unordered_map>
@@ -75,6 +76,7 @@ struct filter_data {
 	std::string modelSize;
 	int objectCategory;
 	bool maskingEnabled;
+	std::array<bool, 4> maskingClasses{true, true, true, true};
 	std::string maskingType;
 	int maskingColor;
 	int maskingBlurRadius;

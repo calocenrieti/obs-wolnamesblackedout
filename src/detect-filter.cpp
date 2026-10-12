@@ -752,10 +752,16 @@ obs_property_t *masking_type = obs_properties_add_list(
 				obs_module_text("MaskingColor"));
 	obs_properties_add_int_slider(masking_group, "masking_blur_radius",
 				obs_module_text("MaskingBlurRadius"), 0, 100, 1);
-	obs_properties_add_int_slider(masking_group, "dilation_iterations",
-				obs_module_text("DilationIterations"), 0, 50, 1);
 	obs_properties_add_int_slider(masking_group, "inpaint_radius",
 				obs_module_text("InpaintRadius"), 1, 200, 1);
+
+	obs_properties_add_bool(masking_group, "mask_character", obs_module_text("MaskCharacter"));
+	obs_properties_add_bool(masking_group, "mask_chat", obs_module_text("MaskChat"));
+	obs_properties_add_bool(masking_group, "mask_party_list", obs_module_text("MaskPartyList"));
+	obs_properties_add_bool(masking_group, "mask_other_general", obs_module_text("MaskOtherGeneral"));
+
+	obs_properties_add_int_slider(masking_group, "dilation_iterations",
+				obs_module_text("DilationIterations"), 0, 50, 1);
 
 	// add callback to show/hide masking options
 	obs_property_set_modified_callback(masking_group_prop, [](obs_properties_t *props_,
@@ -770,8 +776,16 @@ obs_property_t *masking_type = obs_properties_add_list(
 			obs_properties_get(props_, "inpaint_radius");
 		obs_property_t *masking_dilation =
 			obs_properties_get(props_, "dilation_iterations");
+		obs_property_t *mask_character = obs_properties_get(props_, "mask_character");
+		obs_property_t *mask_chat = obs_properties_get(props_, "mask_chat");
+		obs_property_t *mask_party_list = obs_properties_get(props_, "mask_party_list");
+		obs_property_t *mask_other_general = obs_properties_get(props_, "mask_other_general");
 
 		obs_property_set_visible(masking_type, enabled);
+		obs_property_set_visible(mask_character, enabled);
+		obs_property_set_visible(mask_chat, enabled);
+		obs_property_set_visible(mask_party_list, enabled);
+		obs_property_set_visible(mask_other_general, enabled);
 		obs_property_set_visible(masking_color, false);
 		obs_property_set_visible(masking_blur_radius, false);
 		obs_property_set_visible(masking_inpaint_radius, false);
@@ -938,6 +952,10 @@ void detect_filter_defaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, "model_size", "yolodetector");
 	obs_data_set_default_int(settings, "object_category", -1);
 	obs_data_set_default_bool(settings, "masking_group", true);
+	obs_data_set_default_bool(settings, "mask_character", true);
+	obs_data_set_default_bool(settings, "mask_chat", true);
+	obs_data_set_default_bool(settings, "mask_party_list", true);
+	obs_data_set_default_bool(settings, "mask_other_general", true);
 	obs_data_set_default_string(settings, "masking_type", "solid_color");
 	obs_data_set_default_string(settings, "masking_color", "#000000");
 	obs_data_set_default_int(settings, "masking_blur_radius", 3);
@@ -986,6 +1004,12 @@ void detect_filter_update(void *data, obs_data_t *settings)
 	tf->conf_threshold = (float)obs_data_get_double(settings, "threshold");
 	tf->objectCategory = (int)obs_data_get_int(settings, "object_category");
 	tf->maskingEnabled = obs_data_get_bool(settings, "masking_group");
+	tf->maskingClasses = {
+		obs_data_get_bool(settings, "mask_character"),
+		obs_data_get_bool(settings, "mask_chat"),
+		obs_data_get_bool(settings, "mask_party_list"),
+		obs_data_get_bool(settings, "mask_other_general"),
+	};
 	const bool exclude_by_name_enabled = obs_data_get_bool(settings, "exclude_by_name_group");
 	tf->trackingEnabled = exclude_by_name_enabled;
 	tf->ocrEnabled = exclude_by_name_enabled;
@@ -1537,6 +1561,10 @@ void detect_filter_video_tick(void *data, float seconds)
 		if (tf->maskingEnabled) {
 			nextMask = cv::Mat::zeros(cv::Size(maskWidth, maskHeight), CV_8UC1);
 			for (const Object &obj : objects) {
+				if (obj.label >= 0 && static_cast<size_t>(obj.label) < tf->maskingClasses.size() &&
+				    !tf->maskingClasses[static_cast<size_t>(obj.label)]) {
+					continue;
+				}
 				// Check if this detection should be excluded from masking
 				if (tf->exclude_group_enabled && is_rect_excluded(obj.rect, tf->exclude_left,
 									tf->exclude_right, tf->exclude_top, tf->exclude_bottom,
